@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 .DS_Store
 .idea/
+.harness/normalize-patches.json
+.harness/tts-known-issues.json

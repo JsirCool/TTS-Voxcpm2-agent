@@ -118,7 +118,7 @@ pending → synth_done → transcribed → validated → (P5/P6 消费)
 
 ## P2 — Fish TTS Agent
 
-- 每个 chunk 独立调用 Fish TTS API（通过 ClashX 代理 127.0.0.1:7890）
+- 每个 chunk 独立调用 Fish TTS API（通过 HTTPS_PROXY 环境变量）
 - 并行度上限：3
 - 使用 `text_normalized` 作为 TTS 输入
 - 输出 `<chunk_id>.wav`（44100Hz，经 atempo 加速）
@@ -146,7 +146,7 @@ pending → synth_done → transcribed → validated → (P5/P6 消费)
 
 ## P4 — Claude Agent（校验 + 自动修复循环）
 
-通过 CLIProxyAPI (localhost:8317) 调用 Claude。
+通过 CLIProxyAPI (api.anthropic.com) 调用 Claude。
 
 ### 校验逻辑
 将原始文稿、normalized 文本、转写结果三方比对。

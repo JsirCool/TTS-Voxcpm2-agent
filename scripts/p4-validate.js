@@ -5,7 +5,7 @@
  * 将原始文稿与 WhisperX 转写结果送入 Claude，执行语义级比对。
  * FAIL 的 chunk 自动修改 text_normalized 并重跑 P2→P3→P4，最多 3 轮。
  *
- * 通过 CLIProxyAPI (localhost:8317) 调用 Claude API。
+ * 通过 Anthropic API（或 .harness/config.json 配置的 proxy_url）调用 Claude。
  *
  * Usage:
  *   node scripts/p4-validate.js --chunks <chunks.json> --transcripts <dir> --audiodir <dir> --outdir <dir>
@@ -54,7 +54,7 @@ const defaultHarnessDir = path.resolve(__dirname, "..");
 const resolvedHarnessDir = harnessDir || defaultHarnessDir;
 
 // --- 配置（从 config.json 加载，回退到默认值）---
-let CLAUDE_PROXY_URL = "http://localhost:8317/v1/messages";
+let CLAUDE_PROXY_URL = "https://api.anthropic.com/v1/messages";
 let CLAUDE_MODEL = "claude-sonnet-4-20250514";
 let MAX_RETRY_ROUNDS = 3;
 

@@ -48,7 +48,7 @@ Output: per-shot WAV + subtitles.json + durations.json + preview.html
 - ffmpeg + ffprobe
 - [Fish TTS](https://fish.audio) API key
 - Claude API access (via proxy or direct)
-- HTTPS proxy (e.g., ClashX) at `127.0.0.1:7890`
+- HTTPS proxy (optional, via `HTTPS_PROXY` env var)
 
 ### Setup
 
@@ -158,11 +158,11 @@ Environment variables:
 
 ### Proxy
 
-P2 routes Fish TTS API calls through an HTTPS proxy at `127.0.0.1:7890` (HTTP CONNECT tunnel). To change or disable, edit `PROXY_HOST`/`PROXY_PORT` in `scripts/p2-synth.js`.
+P2 uses the standard `HTTPS_PROXY` environment variable for proxy support (e.g., `HTTPS_PROXY=http://127.0.0.1:7890`).
 
 ### Claude API
 
-P4 calls Claude via `localhost:8317` (CLIProxyAPI). To use direct Anthropic API, change `CLAUDE_PROXY_URL` in `scripts/p4-validate.js`.
+P4 calls Claude via the Anthropic API. To use a local proxy, set `proxy_url` in `.harness/config.json`.
 
 ## Testing
 
