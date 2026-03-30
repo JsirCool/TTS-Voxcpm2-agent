@@ -12,26 +12,59 @@
 const fs = require("fs");
 const path = require("path");
 
-// --- 配置 ---
-const MAX_CHARS_PER_CHUNK = 200;
-const MAX_SENTENCES_PER_CHUNK = 5;
-const MIN_SENTENCES_PER_CHUNK = 2;
-
 // --- 参数解析 ---
 const args = process.argv.slice(2);
 let scriptPath = "";
 let outdir = "";
+let harnessDir = "";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--script" && args[i + 1]) scriptPath = args[++i];
   else if (args[i] === "--outdir" && args[i + 1]) outdir = args[++i];
+  else if (args[i] === "--harness-dir" && args[i + 1]) harnessDir = args[++i];
 }
 
 if (!scriptPath || !outdir) {
   console.error(
-    "Usage: node p1-chunk.js --script <script.json> --outdir <dir>"
+    "Usage: node p1-chunk.js --script <script.json> --outdir <dir> [--harness-dir <dir>]"
   );
   process.exit(1);
+}
+
+// --- .harness 目录 ---
+const defaultHarnessDir = path.resolve(__dirname, "..");
+const resolvedHarnessDir = harnessDir || defaultHarnessDir;
+
+// --- 配置（从 config.json 加载，回退到默认值）---
+let MAX_CHARS_PER_CHUNK = 200;
+let MAX_SENTENCES_PER_CHUNK = 5;
+let MIN_SENTENCES_PER_CHUNK = 2;
+
+const configPath = path.join(resolvedHarnessDir, ".harness", "config.json");
+try {
+  const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  if (config.p1) {
+    MAX_CHARS_PER_CHUNK = config.p1.max_chars_per_chunk ?? MAX_CHARS_PER_CHUNK;
+    MAX_SENTENCES_PER_CHUNK = config.p1.max_sentences_per_chunk ?? MAX_SENTENCES_PER_CHUNK;
+    MIN_SENTENCES_PER_CHUNK = config.p1.min_sentences_per_chunk ?? MIN_SENTENCES_PER_CHUNK;
+  }
+} catch {
+  // config.json 不存在或格式错误，使用默认值
+}
+
+// --- normalize patches（跨期记忆）---
+let _normalizePatches = null;
+
+function loadNormalizePatches() {
+  if (_normalizePatches !== null) return _normalizePatches;
+  const patchPath = path.join(resolvedHarnessDir, ".harness", "normalize-patches.json");
+  try {
+    _normalizePatches = JSON.parse(fs.readFileSync(patchPath, "utf-8"));
+    if (!Array.isArray(_normalizePatches)) _normalizePatches = [];
+  } catch {
+    _normalizePatches = [];
+  }
+  return _normalizePatches;
 }
 
 // =============================================================
@@ -40,6 +73,18 @@ if (!scriptPath || !outdir) {
 
 function normalize(text) {
   let t = text;
+
+  // 跨期记忆：应用 normalize-patches.json 中的补丁（最先执行）
+  const patches = loadNormalizePatches();
+  for (const patch of patches) {
+    if (patch.pattern && patch.replacement !== undefined) {
+      const before = t;
+      t = t.replaceAll(patch.pattern, patch.replacement);
+      if (t !== before) {
+        console.log(`  [PATCH] ${patch.pattern} → ${patch.replacement}`);
+      }
+    }
+  }
 
   // 删除导演标注 [...] 和停顿标记
   t = t.replace(/\[.*?\]/g, "");
@@ -82,14 +127,18 @@ function packChunks(sentences, shotId) {
   function flush() {
     if (buffer.length === 0) return;
     const text = buffer.join("");
+    const normalized = normalize(text);
     chunks.push({
       id: `${shotId}_chunk${String(chunks.length + 1).padStart(2, "0")}`,
       shot_id: shotId,
       text: text,
-      text_normalized: normalize(text),
+      text_normalized: normalized,
       sentence_count: buffer.length,
       char_count: text.length,
       status: "pending",
+      normalized_history: [
+        { round: 0, value: normalized, source: "p1-normalize", ts: new Date().toISOString() }
+      ],
     });
     buffer = [];
     bufferLen = 0;
@@ -125,6 +174,9 @@ function packChunks(sentences, shotId) {
       prev.text_normalized = normalize(merged);
       prev.sentence_count += last.sentence_count;
       prev.char_count = merged.length;
+      prev.normalized_history = [
+        { round: 0, value: prev.text_normalized, source: "p1-normalize", ts: new Date().toISOString() }
+      ];
     }
   }
 

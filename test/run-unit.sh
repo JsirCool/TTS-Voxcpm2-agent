@@ -413,6 +413,175 @@ run_test "trace: summary doesn't crash" \
 rm -rf "$WORK"
 
 # ------------------------------------------------
+# Text Diff Tests
+# ------------------------------------------------
+echo ""
+echo "--- Text Diff ---"
+
+DIFF_WORK=$(mktemp -d)
+mkdir -p "$DIFF_WORK/transcripts"
+
+# Chunk with minor difference (should auto-pass)
+cat > "$DIFF_WORK/chunks.json" << 'EOF'
+[
+  {"id":"c1","shot_id":"s1","text":"测试文本","text_normalized":"测试的文本内容","status":"transcribed","char_count":7},
+  {"id":"c2","shot_id":"s1","text":"差异大的","text_normalized":"这是完全不同的内容啊","status":"transcribed","char_count":10}
+]
+EOF
+# c1: similar transcription (homophone 的→地)
+cat > "$DIFF_WORK/transcripts/c1.json" << 'EOF'
+{"chunk_id":"c1","full_transcribed_text":"测试地文本内容","segments":[{"text":"测试地文本内容","start":0,"end":1,"words":[]}]}
+EOF
+# c2: very different transcription
+cat > "$DIFF_WORK/transcripts/c2.json" << 'EOF'
+{"chunk_id":"c2","full_transcribed_text":"完全无关的其他东西","segments":[{"text":"完全无关的其他东西","start":0,"end":1,"words":[]}]}
+EOF
+
+node "$HARNESS/scripts/text-diff.js" --chunks "$DIFF_WORK/chunks.json" --transcripts "$DIFF_WORK/transcripts" >/dev/null 2>&1
+
+run_test "TextDiff: similar text auto-validated" \
+  "node -e \"const c=require('$DIFF_WORK/chunks.json'); process.exit(c.find(x=>x.id==='c1').status==='validated'?0:1)\""
+
+run_test "TextDiff: different text stays transcribed" \
+  "node -e \"const c=require('$DIFF_WORK/chunks.json'); process.exit(c.find(x=>x.id==='c2').status==='transcribed'?0:1)\""
+
+rm -rf "$DIFF_WORK"
+
+# ------------------------------------------------
+# Post-P6 Validation Tests
+# ------------------------------------------------
+echo ""
+echo "--- Post-P6 Validation ---"
+
+P6V_WORK=$(mktemp -d)
+
+# Good subtitles + durations
+cat > "$P6V_WORK/subtitles.json" << 'EOF'
+{
+  "shot01": [
+    {"id":"s1","text":"第一句","start":0.2,"end":2.0},
+    {"id":"s2","text":"第二句","start":2.0,"end":4.5},
+    {"id":"s3","text":"第三句","start":4.5,"end":5.8}
+  ]
+}
+EOF
+cat > "$P6V_WORK/durations.json" << 'EOF'
+[{"id":"shot01","duration_s":6.0,"file":"shot01.wav"}]
+EOF
+
+run_test "PostP6: valid subtitles pass" \
+  "node '$HARNESS/scripts/postcheck-p6.js' --subtitles '$P6V_WORK/subtitles.json' --durations '$P6V_WORK/durations.json' 2>/dev/null"
+
+# Overlapping subtitles (should fail)
+cat > "$P6V_WORK/subtitles_overlap.json" << 'EOF'
+{
+  "shot01": [
+    {"id":"s1","text":"第一句","start":0.2,"end":3.0},
+    {"id":"s2","text":"第二句","start":2.0,"end":4.5}
+  ]
+}
+EOF
+
+run_test "PostP6: overlapping subtitles detected" \
+  "! node '$HARNESS/scripts/postcheck-p6.js' --subtitles '$P6V_WORK/subtitles_overlap.json' --durations '$P6V_WORK/durations.json' 2>/dev/null"
+
+rm -rf "$P6V_WORK"
+
+# ------------------------------------------------
+# Changelog Tests
+# ------------------------------------------------
+echo ""
+echo "--- Changelog ---"
+
+CL_WORK=$(mktemp -d)
+node "$HARNESS/scripts/p1-chunk.js" --script "$HARNESS/example/demo-script.json" --outdir "$CL_WORK" >/dev/null 2>&1
+
+run_test "Changelog: P1 output has normalized_history" \
+  "node -e \"const c=require('$CL_WORK/chunks.json'); process.exit(c.every(x=>Array.isArray(x.normalized_history)&&x.normalized_history.length===1)?0:1)\""
+
+run_test "Changelog: history[0] source is p1-normalize" \
+  "node -e \"const c=require('$CL_WORK/chunks.json'); process.exit(c.every(x=>x.normalized_history[0].source==='p1-normalize')?0:1)\""
+
+rm -rf "$CL_WORK"
+
+# ------------------------------------------------
+# .harness/ Memory Tests
+# ------------------------------------------------
+echo ""
+echo "--- .harness/ Memory ---"
+
+# Test: P1 applies normalize patches
+PATCH_WORK=$(mktemp -d)
+mkdir -p "$PATCH_WORK/.harness"
+cat > "$PATCH_WORK/.harness/normalize-patches.json" << 'EOF'
+[{"pattern": "TestBrand", "replacement": "测试品牌"}]
+EOF
+cat > "$PATCH_WORK/script.json" << 'EOF'
+{"segments":[{"id":1,"text":"这里有TestBrand和其他内容。第二句话。"}]}
+EOF
+
+node "$HARNESS/scripts/p1-chunk.js" --script "$PATCH_WORK/script.json" --outdir "$PATCH_WORK" --harness-dir "$PATCH_WORK" >/dev/null 2>&1
+
+run_test ".harness: P1 applies normalize patches" \
+  "node -e \"const c=require('$PATCH_WORK/chunks.json'); process.exit(c[0].text_normalized.includes('测试品牌')?0:1)\""
+
+# Test: patch log output
+PATCH_LOG=$(node "$HARNESS/scripts/p1-chunk.js" --script "$PATCH_WORK/script.json" --outdir "$PATCH_WORK" --harness-dir "$PATCH_WORK" 2>&1)
+
+run_test ".harness: P1 logs patch application" \
+  "echo '$PATCH_LOG' | grep -q '\\[PATCH\\]'"
+
+# Test: original text preserved (patches only affect text_normalized)
+run_test ".harness: patches don't alter original text" \
+  "node -e \"const c=require('$PATCH_WORK/chunks.json'); process.exit(c[0].text.includes('TestBrand')?0:1)\""
+
+rm -rf "$PATCH_WORK"
+
+# Test: config.json loads defaults when missing
+NOCONFIG_WORK=$(mktemp -d)
+cat > "$NOCONFIG_WORK/script.json" << 'EOF'
+{"segments":[{"id":1,"text":"无配置文件测试。第二句。"}]}
+EOF
+
+run_test ".harness: P1 works without config.json" \
+  "node '$HARNESS/scripts/p1-chunk.js' --script '$NOCONFIG_WORK/script.json' --outdir '$NOCONFIG_WORK' --harness-dir '$NOCONFIG_WORK' >/dev/null 2>&1 && test -f '$NOCONFIG_WORK/chunks.json'"
+
+run_test ".harness: P1 works without .harness dir at all" \
+  "node '$HARNESS/scripts/p1-chunk.js' --script '$NOCONFIG_WORK/script.json' --outdir '$NOCONFIG_WORK' --harness-dir '/tmp/nonexistent_harness_dir_$$' >/dev/null 2>&1 && test -f '$NOCONFIG_WORK/chunks.json'"
+
+rm -rf "$NOCONFIG_WORK"
+
+# Test: config.json overrides defaults
+CONFIG_WORK=$(mktemp -d)
+mkdir -p "$CONFIG_WORK/.harness"
+cat > "$CONFIG_WORK/.harness/config.json" << 'EOF'
+{"p1":{"max_chars_per_chunk":50,"max_sentences_per_chunk":2,"min_sentences_per_chunk":1}}
+EOF
+cat > "$CONFIG_WORK/script.json" << 'EOF'
+{"segments":[{"id":1,"text":"第一句话。第二句话。第三句话。第四句话。第五句话。"}]}
+EOF
+
+node "$HARNESS/scripts/p1-chunk.js" --script "$CONFIG_WORK/script.json" --outdir "$CONFIG_WORK" --harness-dir "$CONFIG_WORK" >/dev/null 2>&1
+
+run_test ".harness: config.json max_sentences_per_chunk=2 produces more chunks" \
+  "node -e \"const c=require('$CONFIG_WORK/chunks.json'); process.exit(c.length>=2?0:1)\""
+
+rm -rf "$CONFIG_WORK"
+
+# Test: empty patches file doesn't break P1
+EMPTY_PATCH_WORK=$(mktemp -d)
+mkdir -p "$EMPTY_PATCH_WORK/.harness"
+echo '[]' > "$EMPTY_PATCH_WORK/.harness/normalize-patches.json"
+cat > "$EMPTY_PATCH_WORK/script.json" << 'EOF'
+{"segments":[{"id":1,"text":"空补丁测试。第二句。"}]}
+EOF
+
+run_test ".harness: empty patches array is safe" \
+  "node '$HARNESS/scripts/p1-chunk.js' --script '$EMPTY_PATCH_WORK/script.json' --outdir '$EMPTY_PATCH_WORK' --harness-dir '$EMPTY_PATCH_WORK' >/dev/null 2>&1 && test -f '$EMPTY_PATCH_WORK/chunks.json'"
+
+rm -rf "$EMPTY_PATCH_WORK"
+
+# ------------------------------------------------
 # Summary
 # ------------------------------------------------
 echo ""

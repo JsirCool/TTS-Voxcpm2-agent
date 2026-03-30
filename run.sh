@@ -35,13 +35,22 @@ VENV="$HARNESS_DIR/.venv/bin/activate"
 
 mkdir -p "$WORK_DIR" "$AUDIO_DIR" "$TRANSCRIPT_DIR" "$VALIDATION_DIR" "$OUTPUT_DIR"
 
+# Input hash — detect script changes, force P1 re-run
+SCRIPT_HASH=$(md5 -q "$HARNESS_DIR/$SCRIPT_PATH" 2>/dev/null || md5sum "$HARNESS_DIR/$SCRIPT_PATH" | cut -d' ' -f1)
+HASH_FILE="$WORK_DIR/.script_hash"
+if [[ -f "$HASH_FILE" ]] && [[ "$(cat "$HASH_FILE")" != "$SCRIPT_HASH" ]]; then
+  echo "  Script changed since last run, forcing re-run from P1"
+  FROM_STEP="p1"
+fi
+echo "$SCRIPT_HASH" > "$HASH_FILE"
+
 # Only clear trace on fresh run (--from p1)
 if [[ "$FROM_STEP" == "p1" ]]; then
   > "$TRACE"
 fi
 
 should_run() {
-  local steps=("p1" "p2" "check2" "p3" "check3" "p4" "p5" "p6" "v2")
+  local steps=("p1" "p2" "check2" "p3" "check3" "diff" "p4" "p5" "p6" "checkp6" "v2")
   local found=false
   for s in "${steps[@]}"; do
     [[ "$s" == "$FROM_STEP" ]] && found=true
@@ -63,7 +72,8 @@ if should_run p1; then
   echo "=== P1: Text Chunking ==="
   node "$HARNESS_DIR/scripts/p1-chunk.js" \
     --script "$HARNESS_DIR/$SCRIPT_PATH" \
-    --outdir "$WORK_DIR"
+    --outdir "$WORK_DIR" \
+    --harness-dir "$HARNESS_DIR"
 fi
 
 # --- P2: Fish TTS Agent ---
@@ -115,6 +125,15 @@ if should_run check3; then
     --transcripts "$TRANSCRIPT_DIR"
 fi
 
+# --- Text diff: deterministic comparison (pre-P4) ---
+if should_run diff; then
+  echo ""
+  echo "=== Text Diff: Deterministic Comparison ==="
+  node "$HARNESS_DIR/scripts/text-diff.js" \
+    --chunks "$CHUNKS" \
+    --transcripts "$TRANSCRIPT_DIR"
+fi
+
 # --- P4: Claude Agent (validate + auto-fix loop, uses P3 server for retranscribe) ---
 if should_run p4; then
   echo ""
@@ -125,7 +144,8 @@ if should_run p4; then
     --audiodir "$AUDIO_DIR" \
     --outdir "$VALIDATION_DIR" \
     --p3-server "http://127.0.0.1:$P3_PORT" \
-    --trace "$TRACE"
+    --trace "$TRACE" \
+    --harness-dir "$HARNESS_DIR"
   echo ""
   echo ">>> V1 Review: Check validation results above <<<"
   echo "    All chunks passed or only low severity — press Enter to continue"
@@ -155,6 +175,15 @@ if should_run p6; then
     --audiodir "$AUDIO_DIR" \
     --subtitles "$SUBTITLES" \
     --outdir "$OUTPUT_DIR"
+fi
+
+# --- Post-P6 end-to-end validation ---
+if should_run checkp6; then
+  echo ""
+  echo "=== Post-P6: End-to-End Validation ==="
+  node "$HARNESS_DIR/scripts/postcheck-p6.js" \
+    --subtitles "$SUBTITLES" \
+    --durations "$OUTPUT_DIR/durations.json"
 fi
 
 # --- V2: Review preview ---

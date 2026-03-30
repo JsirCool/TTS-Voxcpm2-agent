@@ -18,11 +18,6 @@ const http = require("http");
 const { execSync } = require("child_process");
 const { trace } = require("./trace");
 
-// --- 配置 ---
-const CLAUDE_PROXY_URL = "http://localhost:8317/v1/messages";
-const CLAUDE_MODEL = "claude-sonnet-4-20250514";
-const MAX_RETRY_ROUNDS = 3;
-
 // --- 参数解析 ---
 const args = process.argv.slice(2);
 let chunksPath = "";
@@ -33,6 +28,7 @@ let targetChunk = "";
 let venvPath = "";
 let p3ServerUrl = "";
 let tracePath = "";
+let harnessDir = "";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--chunks" && args[i + 1]) chunksPath = args[++i];
@@ -43,13 +39,85 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === "--venv" && args[i + 1]) venvPath = args[++i];
   else if (args[i] === "--p3-server" && args[i + 1]) p3ServerUrl = args[++i];
   else if (args[i] === "--trace" && args[i + 1]) tracePath = args[++i];
+  else if (args[i] === "--harness-dir" && args[i + 1]) harnessDir = args[++i];
 }
 
 if (!chunksPath || !transcriptsDir || !audiodir || !outdir) {
   console.error(
-    "Usage: node p4-validate.js --chunks <chunks.json> --transcripts <dir> --audiodir <dir> --outdir <dir> [--p3-server <url>]"
+    "Usage: node p4-validate.js --chunks <chunks.json> --transcripts <dir> --audiodir <dir> --outdir <dir> [--p3-server <url>] [--harness-dir <dir>]"
   );
   process.exit(1);
+}
+
+// --- .harness 目录 ---
+const defaultHarnessDir = path.resolve(__dirname, "..");
+const resolvedHarnessDir = harnessDir || defaultHarnessDir;
+
+// --- 配置（从 config.json 加载，回退到默认值）---
+let CLAUDE_PROXY_URL = "http://localhost:8317/v1/messages";
+let CLAUDE_MODEL = "claude-sonnet-4-20250514";
+let MAX_RETRY_ROUNDS = 3;
+
+const configPath = path.join(resolvedHarnessDir, ".harness", "config.json");
+try {
+  const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  if (config.p4) {
+    MAX_RETRY_ROUNDS = config.p4.max_rounds ?? MAX_RETRY_ROUNDS;
+    CLAUDE_MODEL = config.p4.model ?? CLAUDE_MODEL;
+    CLAUDE_PROXY_URL = config.p4.proxy_url ?? CLAUDE_PROXY_URL;
+  }
+} catch {
+  // config.json 不存在或格式错误，使用默认值
+}
+
+// --- 跨期记忆：加载已知 TTS 问题 ---
+let _knownIssues = null;
+
+function loadKnownIssues() {
+  if (_knownIssues !== null) return _knownIssues;
+  const issuesPath = path.join(resolvedHarnessDir, ".harness", "tts-known-issues.json");
+  try {
+    _knownIssues = JSON.parse(fs.readFileSync(issuesPath, "utf-8"));
+    if (!Array.isArray(_knownIssues)) _knownIssues = [];
+  } catch {
+    _knownIssues = [];
+  }
+  return _knownIssues;
+}
+
+// --- 跨期记忆：写入 normalize-patches.json ---
+function appendNormalizePatch(patch) {
+  const patchPath = path.join(resolvedHarnessDir, ".harness", "normalize-patches.json");
+  let patches = [];
+  try {
+    patches = JSON.parse(fs.readFileSync(patchPath, "utf-8"));
+    if (!Array.isArray(patches)) patches = [];
+  } catch {
+    patches = [];
+  }
+  // 避免重复（同 pattern 不重复写入）
+  if (!patches.some((p) => p.pattern === patch.pattern)) {
+    patches.push(patch);
+    fs.mkdirSync(path.dirname(patchPath), { recursive: true });
+    fs.writeFileSync(patchPath, JSON.stringify(patches, null, 2));
+    console.log(`    [MEMORY] normalize patch saved: ${patch.pattern} → ${patch.replacement}`);
+  }
+}
+
+// --- 跨期记忆：写入 tts-known-issues.json ---
+function appendKnownIssue(issue) {
+  const issuesPath = path.join(resolvedHarnessDir, ".harness", "tts-known-issues.json");
+  let issues = [];
+  try {
+    issues = JSON.parse(fs.readFileSync(issuesPath, "utf-8"));
+    if (!Array.isArray(issues)) issues = [];
+  } catch {
+    issues = [];
+  }
+  issues.push(issue);
+  fs.mkdirSync(path.dirname(issuesPath), { recursive: true });
+  fs.writeFileSync(issuesPath, JSON.stringify(issues, null, 2));
+  console.log(`    [MEMORY] known issue saved: ${issue.pattern}`);
 }
 
 // 脚本路径（用于调用 P2/P3 重做）
@@ -165,6 +233,11 @@ ${transcribed}
 - 标点差异
 - 轻微停顿差异
 - 语气词增减（嗯、啊）
+${(() => {
+  const issues = loadKnownIssues();
+  if (issues.length === 0) return "";
+  return "\n以下是已知的 TTS 引擎限制，不算错误：\n" + issues.map((i) => `- ${i.pattern}`).join("\n");
+})()}
 
 ## 输出格式
 
@@ -358,6 +431,7 @@ async function main() {
 
     let passed = false;
     const previousNormalized = []; // Track text_normalized across rounds for oscillation detection
+    let lastFixChanges = []; // Track fix changes for memory writing
 
     for (let round = 1; round <= MAX_RETRY_ROUNDS; round++) {
       const transcriptPath = path.join(transcriptsDir, `${chunk.id}.json`);
@@ -406,6 +480,20 @@ async function main() {
           chunk.status = "validated";
           chunk.validate_round = round;
           fs.writeFileSync(chunksPath, JSON.stringify(chunks, null, 2));
+
+          // 跨期记忆：round > 1 表示之前有修复，将修复写入 normalize-patches
+          if (round > 1 && lastFixChanges.length > 0) {
+            for (const change of lastFixChanges) {
+              appendNormalizePatch({
+                pattern: change.original,
+                replacement: change.fixed,
+                source: "p4-auto",
+                episode: chunk.shot_id || "",
+                created: new Date().toISOString(),
+              });
+            }
+          }
+
           passCount++;
           passed = true;
           break;
@@ -463,9 +551,22 @@ async function main() {
           }
 
           previousNormalized.push(oldNormalized);
+          if (!chunk.normalized_history) chunk.normalized_history = [];
+          chunk.normalized_history.push({
+            round: round,
+            value: fix.text_normalized,
+            source: "claude",
+            reason: (fix.changes || []).join("; "),
+            ts: new Date().toISOString(),
+          });
           chunk.text_normalized = fix.text_normalized;
           chunk.previous_normalized = previousNormalized;
           chunk.status = "pending"; // 触发 P2 重做
+
+          // 记录修复映射，用于写入跨期记忆
+          lastFixChanges = highIssues
+            .filter((i) => i.fix)
+            .map((i) => ({ original: i.original, fixed: i.fix }));
 
           console.log(`    → 修改: ${(fix.changes || []).join("; ")}`);
           console.log(
@@ -497,6 +598,34 @@ async function main() {
       fs.writeFileSync(chunksPath, JSON.stringify(chunks, null, 2));
       needsHuman.push(chunk);
       failCount++;
+
+      // 跨期记忆：将无法自动修复的问题记录到 tts-known-issues.json
+      // 读取最后一轮的校验结果来提取 high issues
+      try {
+        const lastResultFile = fs
+          .readdirSync(outdir)
+          .filter((f) => f.startsWith(chunk.id) && f.endsWith(".json"))
+          .sort()
+          .pop();
+        if (lastResultFile) {
+          const lastResult = JSON.parse(
+            fs.readFileSync(path.join(outdir, lastResultFile), "utf-8")
+          );
+          const highIssues = (lastResult.issues || []).filter(
+            (i) => i.severity === "high"
+          );
+          for (const issue of highIssues) {
+            appendKnownIssue({
+              pattern: `${issue.original} → ${issue.transcribed}`,
+              type: "tts_engine_limitation",
+              episode: chunk.shot_id || "",
+              created: new Date().toISOString(),
+            });
+          }
+        }
+      } catch {
+        // 读取失败不影响主流程
+      }
     }
   }
 

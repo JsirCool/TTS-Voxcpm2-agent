@@ -138,6 +138,15 @@ echo "--- Post-P3 Precheck ---"
 node "$HARNESS_DIR/scripts/precheck.js" --stage p3 --chunks "$WORK/chunks.json" --transcripts "$WORK/transcripts" || echo "  [WARN] precheck issues found, continuing..."
 
 # ========================================
+# Text Diff: deterministic comparison (pre-P4)
+# ========================================
+echo ""
+echo "--- Text Diff: Deterministic Comparison ---"
+node "$HARNESS_DIR/scripts/text-diff.js" \
+  --chunks "$WORK/chunks.json" \
+  --transcripts "$WORK/transcripts" || echo "  [WARN] text-diff issues found, continuing..."
+
+# ========================================
 # P4: Claude 校验（full 模式，单 chunk 测试）
 # ========================================
 if [[ "$MODE" != "--no-p4" ]]; then
