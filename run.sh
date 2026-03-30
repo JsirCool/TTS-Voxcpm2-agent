@@ -2,21 +2,30 @@
 # TTS Agent Harness — Multi-Agent Orchestration
 #
 # Usage:
-#   bash run.sh <script.json> <episode_id>
+#   bash run.sh <script.json> <episode_id> [--from pN] [--output-dir <path>]
 #   bash run.sh example/demo-script.json demo
+#   bash run.sh script/brief01-script.json brief01 --output-dir /path/to/public/brief01/tts
 #
 # Resume from a step:
 #   bash run.sh <script.json> <episode_id> --from p3
 
 set -euo pipefail
 
-SCRIPT_PATH="${1:?Usage: run.sh <script.json> <episode_id> [--from pN]}"
-EPISODE="${2:?Usage: run.sh <script.json> <episode_id> [--from pN]}"
+SCRIPT_PATH="${1:?Usage: run.sh <script.json> <episode_id> [--from pN] [--output-dir <path>]}"
+EPISODE="${2:?Usage: run.sh <script.json> <episode_id> [--from pN] [--output-dir <path>]}"
 
 FROM_STEP="p1"
-if [[ "${3:-}" == "--from" ]]; then
-  FROM_STEP="${4:?--from requires a step name (p1-p6)}"
-fi
+EXTERNAL_OUTPUT_DIR=""
+
+# 解析可选参数（位置不固定）
+shift 2
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from) FROM_STEP="${2:?--from requires a step name}"; shift 2 ;;
+    --output-dir) EXTERNAL_OUTPUT_DIR="${2:?--output-dir requires a path}"; shift 2 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
 
 # Paths — all relative to this repo root
 HARNESS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -208,6 +217,17 @@ if should_run v2; then
   open "$PREVIEW" 2>/dev/null || true
 fi
 
+# --- Copy to external output dir ---
+if [[ -n "$EXTERNAL_OUTPUT_DIR" ]]; then
+  echo ""
+  echo "=== Copying output to $EXTERNAL_OUTPUT_DIR ==="
+  mkdir -p "$EXTERNAL_OUTPUT_DIR"
+  cp "$OUTPUT_DIR"/*.wav "$EXTERNAL_OUTPUT_DIR/" 2>/dev/null || true
+  cp "$OUTPUT_DIR/durations.json" "$EXTERNAL_OUTPUT_DIR/" 2>/dev/null || true
+  cp "$SUBTITLES" "$EXTERNAL_OUTPUT_DIR/subtitles.json" 2>/dev/null || true
+  echo "  Done: $(ls "$EXTERNAL_OUTPUT_DIR"/*.wav 2>/dev/null | wc -l | tr -d ' ') WAV files + subtitles.json + durations.json"
+fi
+
 echo ""
 echo "=================================================="
 echo " Done!"
@@ -217,4 +237,7 @@ echo "   Durations: $OUTPUT_DIR/durations.json"
 echo "   Subtitles: $SUBTITLES"
 echo "   Preview:   $PREVIEW"
 echo "   Trace:     $TRACE"
+if [[ -n "$EXTERNAL_OUTPUT_DIR" ]]; then
+echo "   Copied to: $EXTERNAL_OUTPUT_DIR/"
+fi
 echo "=================================================="
