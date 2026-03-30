@@ -10,7 +10,7 @@ FAIL=0
 run_test() {
   local name="$1"
   local cmd="$2"
-  printf "  %-40s" "$name"
+  printf "  %-50s" "$name"
   if eval "$cmd" >/dev/null 2>&1; then
     echo "PASS"
     PASS=$((PASS + 1))
@@ -28,7 +28,6 @@ echo ""
 # ------------------------------------------------
 echo "--- P1: Chunking ---"
 
-# Setup
 WORK=$(mktemp -d)
 node "$HARNESS/scripts/p1-chunk.js" --script "$HARNESS/example/demo-script.json" --outdir "$WORK" >/dev/null 2>&1
 
@@ -54,14 +53,24 @@ run_test "P1: normalize adds brand breaks" \
 run_test "P1: no chunk exceeds 300 chars" \
   "node -e \"const c=require('$WORK/chunks.json'); process.exit(c.every(x=>x.char_count<=300)?0:1)\""
 
-run_test "P1: date format not mangled (no 到 in non-range)" \
+run_test "P1: date format preserved (no 到 in YYYY-MM-DD)" \
   "node -e \"
     const c=require('$WORK/chunks.json');
-    // '2024-03-07' should not become '2024到03到07'
     process.exit(c.every(x=>!x.text_normalized.includes('到03到'))?0:1);
   \""
 
-rm -rf "$WORK"
+# P1: min-chunk merge respects char limit
+# Create a script with a 190-char segment followed by a 1-sentence segment
+MERGE_WORK=$(mktemp -d)
+cat > "$MERGE_WORK/script.json" << 'EOF'
+{"segments":[{"id":1,"text":"这是一段非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的文本，超过一百五十个字的段落。这里还有更多内容来确保这个片段已经接近两百字的上限了。这段话的存在就是为了测试合并保护机制是否正常工作。第三句话。第四句话。第五句话。最后一句。"}]}
+EOF
+node "$HARNESS/scripts/p1-chunk.js" --script "$MERGE_WORK/script.json" --outdir "$MERGE_WORK" >/dev/null 2>&1
+
+run_test "P1: merged chunk ≤ 300 chars" \
+  "node -e \"const c=require('$MERGE_WORK/chunks.json'); process.exit(c.every(x=>x.char_count<=300)?0:1)\""
+
+rm -rf "$WORK" "$MERGE_WORK"
 
 # ------------------------------------------------
 # P5 Tests
@@ -69,11 +78,9 @@ rm -rf "$WORK"
 echo ""
 echo "--- P5: Subtitles ---"
 
-# Setup: create mock data
 WORK=$(mktemp -d)
 mkdir -p "$WORK/transcripts"
 
-# Create a minimal chunks.json with 2 shots
 cat > "$WORK/chunks.json" << 'CHUNKS_EOF'
 [
   {"id":"shot01_chunk01","shot_id":"shot01","text":"3月7号Karpathy发了630行代码，autoResearch，23天60000 stars。Fortune杂志叫它The Karpathy Loop。","text_normalized":"...","status":"validated","char_count":78,"duration_s":8.5},
@@ -170,19 +177,70 @@ run_test "P5: no English words split mid-word" \
       for(let i=1;i<subs.length;i++){
         const prev=subs[i-1].text;
         const cur=subs[i].text;
-        // Mid-word split: prev ends with a letter (no trailing space/punct)
-        // AND cur starts with lowercase — e.g. 'Karpa' + 'thy'
-        // But 'cargo ' + 'test' is a valid split between two words
-        if(/[a-zA-Z]$/.test(prev) && !/[\s，。、；,]$/.test(prev) && /^[a-z]/.test(cur)) process.exit(1);
+        // Mid-word split: prev ends letter (no trailing space/punct), cur starts letter
+        if(/[a-zA-Z]$/.test(prev) && !/[\s，。、；,]$/.test(prev) && /^[a-zA-Z]/.test(cur)) process.exit(1);
       }
     }
     process.exit(0);
   \""
 
-rm -rf "$WORK"
+# P5: word 少于 line 数时不丢字幕
+FEW_WORDS=$(mktemp -d)
+mkdir -p "$FEW_WORDS/transcripts"
+cat > "$FEW_WORDS/chunks.json" << 'EOF'
+[{"id":"c1","shot_id":"s1","text":"第一句话。第二句话。第三句话。第四句话。第五句话。","text_normalized":"...","status":"validated","char_count":25,"duration_s":5.0}]
+EOF
+# Only 3 words for 5 subtitle lines
+cat > "$FEW_WORDS/transcripts/c1.json" << 'EOF'
+{"chunk_id":"c1","shot_id":"s1","original_text":"...","original_normalized":"...","segments":[{"text":"第一句话第二句话第三句话第四句话第五句话","start":0.0,"end":5.0,"words":[{"word":"第","start":0.0,"end":1.0},{"word":"一","start":1.0,"end":2.5},{"word":"句","start":2.5,"end":5.0}]}],"full_transcribed_text":"第一句话第二句话第三句话第四句话第五句话"}
+EOF
+node "$HARNESS/scripts/p5-subtitles.js" --chunks "$FEW_WORDS/chunks.json" --transcripts "$FEW_WORDS/transcripts" --outdir "$FEW_WORDS" >/dev/null 2>&1
+
+run_test "P5: few words → still produces subtitles" \
+  "node -e \"
+    const s=require('$FEW_WORDS/subtitles.json');
+    const subs=s.s1.chunks[0].subtitles;
+    // splitSubtitleLines merges short sentences → 2 lines; 3 words split across 2 lines
+    process.exit(subs.length>=2?0:1);
+  \""
+
+run_test "P5: few words → no NaN/Infinity" \
+  "node -e \"
+    const s=require('$FEW_WORDS/subtitles.json');
+    const subs=s.s1.chunks[0].subtitles;
+    process.exit(subs.every(x=>isFinite(x.start)&&isFinite(x.end))?0:1);
+  \""
+
+rm -rf "$FEW_WORDS"
+
+# P5: fallback branch (0 words)
+NO_WORDS=$(mktemp -d)
+mkdir -p "$NO_WORDS/transcripts"
+cat > "$NO_WORDS/chunks.json" << 'EOF'
+[{"id":"c1","shot_id":"s1","text":"测试无词级数据的场景。第二句。","text_normalized":"...","status":"validated","char_count":15,"duration_s":3.0}]
+EOF
+cat > "$NO_WORDS/transcripts/c1.json" << 'EOF'
+{"chunk_id":"c1","shot_id":"s1","original_text":"...","original_normalized":"...","segments":[{"text":"测试无词级数据的场景第二句","start":0.0,"end":3.0,"words":[]}],"full_transcribed_text":"测试无词级数据的场景第二句"}
+EOF
+node "$HARNESS/scripts/p5-subtitles.js" --chunks "$NO_WORDS/chunks.json" --transcripts "$NO_WORDS/transcripts" --outdir "$NO_WORDS" >/dev/null 2>&1
+
+run_test "P5: fallback (0 words) produces subtitles" \
+  "node -e \"
+    const s=require('$NO_WORDS/subtitles.json');
+    process.exit(s.s1.chunks[0].subtitles.length>0?0:1);
+  \""
+
+run_test "P5: fallback timestamps are finite" \
+  "node -e \"
+    const s=require('$NO_WORDS/subtitles.json');
+    const subs=s.s1.chunks[0].subtitles;
+    process.exit(subs.every(x=>isFinite(x.start)&&isFinite(x.end)&&x.end>x.start)?0:1);
+  \""
+
+rm -rf "$NO_WORDS" "$WORK"
 
 # ------------------------------------------------
-# P6 Tests (using ffmpeg to generate mock WAVs)
+# P6 Tests
 # ------------------------------------------------
 echo ""
 echo "--- P6: Concat ---"
@@ -190,12 +248,10 @@ echo "--- P6: Concat ---"
 WORK=$(mktemp -d)
 mkdir -p "$WORK/audio" "$WORK/output"
 
-# Generate 2 mock WAVs (1s and 2s)
 ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 1.0 "$WORK/audio/shot01_chunk01.wav" 2>/dev/null
 ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 2.0 "$WORK/audio/shot01_chunk02.wav" 2>/dev/null
 ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 1.5 "$WORK/audio/shot02_chunk01.wav" 2>/dev/null
 
-# chunks.json with 2 shots (shot01 has 2 chunks, shot02 has 1)
 cat > "$WORK/chunks.json" << 'EOF'
 [
   {"id":"shot01_chunk01","shot_id":"shot01","text":"第一句","text_normalized":"第一句","status":"validated","duration_s":1.0,"file":"shot01_chunk01.wav"},
@@ -204,7 +260,6 @@ cat > "$WORK/chunks.json" << 'EOF'
 ]
 EOF
 
-# P5 output (mock subtitles in P5 format)
 cat > "$WORK/subtitles.json" << 'EOF'
 {
   "shot01": {
@@ -229,34 +284,43 @@ run_test "P6: produces shot WAV files" \
 run_test "P6: produces durations.json" \
   "test -f '$WORK/output/durations.json'"
 
-run_test "P6: shot01 duration ≈ 1.0 + 2.0 + 0.05gap + 0.4padding = 3.45s (±0.2)" \
+run_test "P6: shot01 duration ≈ 3.45s (±0.2)" \
   "node -e \"
     const {execSync}=require('child_process');
     const dur=parseFloat(execSync('ffprobe -v quiet -show_entries format=duration -of csv=p=0 $WORK/output/shot01.wav',{encoding:'utf-8'}));
     process.exit(Math.abs(dur-3.45)<0.2?0:1);
   \""
 
-run_test "P6: shot02 duration ≈ 1.5 + 0.4padding = 1.9s (±0.2)" \
+run_test "P6: shot02 duration ≈ 1.9s (±0.2)" \
   "node -e \"
     const {execSync}=require('child_process');
     const dur=parseFloat(execSync('ffprobe -v quiet -show_entries format=duration -of csv=p=0 $WORK/output/shot02.wav',{encoding:'utf-8'}));
     process.exit(Math.abs(dur-1.9)<0.2?0:1);
   \""
 
-run_test "P6: subtitles.json is now flat arrays (not chunks format)" \
+run_test "P6: subtitles flattened to arrays" \
   "node -e \"const s=require('$WORK/subtitles.json'); process.exit(Array.isArray(s.shot01)?0:1)\""
 
-run_test "P6: shot01 sub_001 start includes padding (≈0.2)" \
+run_test "P6: sub_001 start ≈ 0.2 (padding)" \
   "node -e \"const s=require('$WORK/subtitles.json'); process.exit(Math.abs(s.shot01[0].start-0.2)<0.05?0:1)\""
 
-run_test "P6: shot01 sub_002 start includes padding+chunk1+gap" \
-  "node -e \"
-    const s=require('$WORK/subtitles.json');
-    // expected: 0.2(pad) + 1.0(chunk1) + 0.05(gap) = 1.25
-    process.exit(Math.abs(s.shot01[1].start-1.25)<0.1?0:1);
-  \""
+run_test "P6: sub_002 start ≈ 1.25 (pad+chunk1+gap)" \
+  "node -e \"const s=require('$WORK/subtitles.json'); process.exit(Math.abs(s.shot01[1].start-1.25)<0.1?0:1)\""
 
-rm -rf "$WORK"
+# P6: 0-chunk shot doesn't crash
+EMPTY_WORK=$(mktemp -d)
+mkdir -p "$EMPTY_WORK/audio" "$EMPTY_WORK/output"
+cat > "$EMPTY_WORK/chunks.json" << 'EOF'
+[{"id":"empty_chunk","shot_id":"empty_shot","text":"","text_normalized":"","status":"validated","duration_s":0,"file":null}]
+EOF
+cat > "$EMPTY_WORK/subtitles.json" << 'EOF'
+{}
+EOF
+
+run_test "P6: 0-chunk shot doesn't crash" \
+  "node '$HARNESS/scripts/p6-concat.js' --chunks '$EMPTY_WORK/chunks.json' --audiodir '$EMPTY_WORK/audio' --subtitles '$EMPTY_WORK/subtitles.json' --outdir '$EMPTY_WORK/output' >/dev/null 2>&1"
+
+rm -rf "$WORK" "$EMPTY_WORK"
 
 # ------------------------------------------------
 # Precheck Tests
@@ -267,59 +331,86 @@ echo "--- Precheck ---"
 WORK=$(mktemp -d)
 mkdir -p "$WORK/audio"
 
-# Good WAV (44100 mono, 3s)
 ffmpeg -y -f lavfi -i "sine=frequency=440:duration=3" -ar 44100 -ac 1 "$WORK/audio/good.wav" 2>/dev/null
-# Bad WAV (stereo)
 ffmpeg -y -f lavfi -i "sine=frequency=440:duration=3" -ar 44100 -ac 2 "$WORK/audio/bad_stereo.wav" 2>/dev/null
 
-cat > "$WORK/chunks.json" << 'EOF'
-[
-  {"id":"good","shot_id":"s1","text":"测试正常音频文件","text_normalized":"测试正常音频文件","status":"synth_done","char_count":8,"duration_s":3.0,"file":"good.wav"},
-  {"id":"bad_stereo","shot_id":"s2","text":"测试立体声音频","text_normalized":"测试立体声音频","status":"synth_done","char_count":7,"duration_s":3.0,"file":"bad_stereo.wav"}
-]
+cat > "$WORK/chunks_good.json" << 'EOF'
+[{"id":"good","shot_id":"s1","text":"测试正常音频文件","text_normalized":"测试正常音频文件","status":"synth_done","char_count":8,"duration_s":3.0,"file":"good.wav"}]
 EOF
 
-run_test "Precheck P2: rejects stereo WAV" \
-  "! node '$HARNESS/scripts/precheck.js' --stage p2 --chunks '$WORK/chunks.json' --audiodir '$WORK/audio' 2>&1 | grep -q 'All checks passed'"
+cat > "$WORK/chunks_stereo.json" << 'EOF'
+[{"id":"bad_stereo","shot_id":"s2","text":"测试立体声音频","text_normalized":"测试立体声音频","status":"synth_done","char_count":7,"duration_s":3.0,"file":"bad_stereo.wav"}]
+EOF
 
-# Test post-P3 precheck
+run_test "Precheck P2: passes mono 44100Hz" \
+  "node '$HARNESS/scripts/precheck.js' --stage p2 --chunks '$WORK/chunks_good.json' --audiodir '$WORK/audio' 2>/dev/null"
+
+run_test "Precheck P2: rejects stereo (exit 1)" \
+  "! node '$HARNESS/scripts/precheck.js' --stage p2 --chunks '$WORK/chunks_stereo.json' --audiodir '$WORK/audio' 2>/dev/null"
+
+# Post-P3 tests
 mkdir -p "$WORK/transcripts"
+
 cat > "$WORK/chunks_p3.json" << 'EOF'
-[{"id":"t1","shot_id":"s1","text":"测试文本","text_normalized":"测试文本","status":"transcribed","char_count":4}]
+[{"id":"t1","shot_id":"s1","text":"测试文本内容","text_normalized":"测试文本内容","status":"transcribed","char_count":6}]
 EOF
 cat > "$WORK/transcripts/t1.json" << 'EOF'
-{"chunk_id":"t1","segments":[{"text":"测试文本","start":0.0,"end":1.5,"words":[]}],"full_transcribed_text":"测试文本"}
+{"chunk_id":"t1","segments":[{"text":"测试文本内容","start":0.0,"end":1.5,"words":[]}],"full_transcribed_text":"测试文本内容"}
 EOF
 
 run_test "Precheck P3: passes valid transcript" \
-  "node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3.json' --transcripts '$WORK/transcripts' >/dev/null 2>&1"
+  "node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3.json' --transcripts '$WORK/transcripts' 2>/dev/null"
 
-# Bad transcript: non-monotonic timestamps
+# Non-monotonic timestamps
 cat > "$WORK/transcripts/t1.json" << 'EOF'
 {"chunk_id":"t1","segments":[{"text":"a","start":2.0,"end":1.0,"words":[]}],"full_transcribed_text":"测试"}
 EOF
 
-run_test "Precheck P3: rejects non-monotonic timestamps" \
-  "! node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3.json' --transcripts '$WORK/transcripts' >/dev/null 2>&1"
+run_test "Precheck P3: rejects non-monotonic (exit 1)" \
+  "! node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3.json' --transcripts '$WORK/transcripts' 2>/dev/null"
+
+# Char ratio boundary: 0.7 should pass, 0.69 should fail
+cat > "$WORK/chunks_p3_ratio.json" << 'EOF'
+[{"id":"t1","shot_id":"s1","text":"一二三四五六七八九十","text_normalized":"一二三四五六七八九十","status":"transcribed","char_count":10}]
+EOF
+cat > "$WORK/transcripts/t1.json" << 'EOF'
+{"chunk_id":"t1","segments":[{"text":"一二三四五六七","start":0.0,"end":1.5,"words":[]}],"full_transcribed_text":"一二三四五六七"}
+EOF
+
+run_test "Precheck P3: char ratio 0.7 passes" \
+  "node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3_ratio.json' --transcripts '$WORK/transcripts' 2>/dev/null"
+
+cat > "$WORK/transcripts/t1.json" << 'EOF'
+{"chunk_id":"t1","segments":[{"text":"一二三","start":0.0,"end":1.5,"words":[]}],"full_transcribed_text":"一二三"}
+EOF
+
+run_test "Precheck P3: char ratio 0.3 fails (exit 1)" \
+  "! node '$HARNESS/scripts/precheck.js' --stage p3 --chunks '$WORK/chunks_p3_ratio.json' --transcripts '$WORK/transcripts' 2>/dev/null"
 
 rm -rf "$WORK"
 
 # ------------------------------------------------
-# splitSubtitleLines Tests
+# trace.js Tests
 # ------------------------------------------------
 echo ""
-echo "--- splitSubtitleLines ---"
+echo "--- Trace ---"
 
-run_test "Split: English word not broken" \
+WORK=$(mktemp -d)
+TRACE_FILE="$WORK/trace.jsonl"
+
+run_test "trace: writes valid JSONL" \
   "node -e \"
-    const p5 = require('$HARNESS/scripts/p5-subtitles.js');
-    // This is tested indirectly — if the module exports splitSubtitleLines
-    // For now just test the P5 output doesn't have broken English words
-    process.exit(0);
-  \" 2>/dev/null || node -e \"
-    // P5 doesn't export, test via running it on fixtures
-    process.exit(0);
+    const {trace}=require('$HARNESS/scripts/trace.js');
+    trace('$TRACE_FILE',{chunk:'c1',phase:'p2',event:'start'});
+    trace('$TRACE_FILE',{chunk:'c1',phase:'p2',event:'done',duration_ms:1234});
+    const lines=require('fs').readFileSync('$TRACE_FILE','utf-8').trim().split('\n');
+    process.exit(lines.length===2 && lines.every(l=>JSON.parse(l).ts)?0:1);
   \""
+
+run_test "trace: summary doesn't crash" \
+  "node -e \"require('$HARNESS/scripts/trace.js').summary('$TRACE_FILE')\" 2>/dev/null"
+
+rm -rf "$WORK"
 
 # ------------------------------------------------
 # Summary

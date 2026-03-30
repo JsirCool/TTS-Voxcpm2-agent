@@ -172,8 +172,13 @@ function main() {
 
         let wordCursor = 0;
         for (let li = 0; li < originalLines.length; li++) {
+          // 最后一行取剩余所有 words，避免 round 累积溢出
+          const isLastLine = li === originalLines.length - 1;
           const ratio = lineWeights[li] / totalWeight;
-          const wordsForLine = Math.max(1, Math.round(ratio * allWords.length));
+          const wordsForLine = isLastLine
+            ? allWords.length - wordCursor
+            : Math.max(1, Math.round(ratio * allWords.length));
+          if (wordsForLine <= 0) break;
           const firstIdx = wordCursor;
           const lastIdx = Math.min(wordCursor + wordsForLine - 1, allWords.length - 1);
 
@@ -193,7 +198,7 @@ function main() {
         }
       } else {
         // === Fallback：无 word-level 数据，线性按字数分配 ===
-        const totalChars = originalLines.reduce((s, l) => s + l.length, 0);
+        const totalChars = originalLines.reduce((s, l) => s + l.length, 0) || 1;
         let cursor = 0;
         for (const line of originalLines) {
           const lineDuration = (line.length / totalChars) * chunkDuration;
