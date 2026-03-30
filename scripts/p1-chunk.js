@@ -184,7 +184,6 @@ function main() {
     .map((s) => s.tts_text || s.text || s.narration || "")
     .filter(Boolean);
   const reconstructed = [];
-  let ci = 0;
   for (const seg of segments) {
     const shotId = typeof seg.id === "number"
       ? `shot${String(seg.id).padStart(2, "0")}`

@@ -92,7 +92,7 @@ else
   node -e "
     const fs=require('fs');
     const c=require('$WORK/chunks.json');
-    c.forEach(x=>{if(fs.existsSync('$WORK/audio/'+x.id+'.wav')){x.status='synth_done';x.file=x.id+'.wav'}});
+    c.forEach(x=>{if(x.status==='pending'&&fs.existsSync('$WORK/audio/'+x.id+'.wav')){x.status='synth_done';x.file=x.id+'.wav'}});
     fs.writeFileSync('$WORK/chunks.json',JSON.stringify(c,null,2));
   "
 fi
@@ -120,7 +120,6 @@ if [[ "$NEED_TRANSCRIBE" -gt 0 ]]; then
   # 启动 P3 server（传 work_dir 写 PID 文件）
   source "$HARNESS_DIR/scripts/start-p3-server.sh" "$P3_PORT" "$HARNESS_DIR/.venv/bin/activate" "$HARNESS_DIR/scripts/p3-transcribe.py" "$WORK"
 
-  source "$HARNESS_DIR/.venv/bin/activate"
   python "$HARNESS_DIR/scripts/p3-transcribe.py" \
     --chunks "$WORK/chunks.json" --audiodir "$WORK/audio" --outdir "$WORK/transcripts" \
     --server-url "http://127.0.0.1:$P3_PORT"
@@ -129,7 +128,7 @@ else
   node -e "
     const fs=require('fs');
     const c=require('$WORK/chunks.json');
-    c.forEach(x=>{if(fs.existsSync('$WORK/transcripts/'+x.id+'.json'))x.status='transcribed'});
+    c.forEach(x=>{if(x.status==='synth_done'&&fs.existsSync('$WORK/transcripts/'+x.id+'.json'))x.status='transcribed'});
     fs.writeFileSync('$WORK/chunks.json',JSON.stringify(c,null,2));
   "
 fi
@@ -184,7 +183,7 @@ source "$HARNESS_DIR/scripts/stop-p3-server.sh" "$WORK" "$P3_PORT"
 # ========================================
 # P5 + P6 + V2
 # ========================================
-# 标记所有 transcribed 为 validated（P4 只跑了 shot01）
+# 标记 transcribed 为 validated（不覆盖 needs_human）
 node -e "
   const fs=require('fs');
   const c=require('$WORK/chunks.json');
