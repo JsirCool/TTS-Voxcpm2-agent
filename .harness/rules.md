@@ -6,6 +6,7 @@ P1 normalize 和 P4 Claude 都必须遵守这些规则。人工维护，harness 
 - 句首英文品牌名前加 `.`（`.AutoGPT 十八万星标`）
 - 句中英文保持原样，不转中文，不音译人名
 - 英文连字符改空格（`yoyo-evolve` → `yoyo evolve`）
+- 文件后缀：`.md` → `文档`，`.json`/`.jsonl` → `文件`
 - OpenAI 句中加空格（`Open AI`）
 
 ## 数字处理
