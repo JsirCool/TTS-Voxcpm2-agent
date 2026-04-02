@@ -147,7 +147,9 @@ if (stage === "p3") {
 
     // Check 4: transcribed text length vs original (within 15% tolerance)
     const transcribedText = transcript.full_transcribed_text || "";
-    const originalLen = chunk.text.replace(/[^\u4e00-\u9fff\w]/g, "").length; // count meaningful chars
+    // Strip TTS control tags before counting (S2-Pro: [break], [breath], [long break], phoneme tags)
+    const strippedText = chunk.text.replace(/\[(?:break|breath|long[ -]break)\]/g, "").replace(/<\|phoneme_start\|>.*?<\|phoneme_end\|>/g, "");
+    const originalLen = strippedText.replace(/[^\u4e00-\u9fff\w]/g, "").length; // count meaningful chars
     const transcribedLen = transcribedText.replace(/[^\u4e00-\u9fff\w]/g, "").length;
     const ratio = originalLen > 0 ? transcribedLen / originalLen : 0;
 
