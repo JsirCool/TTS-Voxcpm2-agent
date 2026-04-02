@@ -181,18 +181,29 @@ function main() {
     const shotId = typeof seg.id === "number"
       ? `shot${String(seg.id).padStart(2, "0")}`
       : seg.id;
-    const text = seg.tts_text || seg.text || seg.narration || "";
+    const ttsText = seg.tts_text || seg.text || seg.narration || "";
+    const subtitleText = seg.text || seg.narration || "";
 
-    if (!text) {
+    if (!ttsText) {
       console.log(`  [SKIP] ${shotId} — no text`);
       continue;
     }
 
-    const sentences = splitSentences(text);
+    const sentences = splitSentences(ttsText);
     const chunks = packChunks(sentences, shotId);
 
+    // 如果有独立的字幕文本（seg.text ≠ seg.tts_text），存到 subtitle_text
+    if (seg.tts_text && subtitleText && subtitleText !== ttsText) {
+      // 按 chunk 数量均匀分配字幕文本（按句号切分对齐）
+      const subSentences = splitSentences(subtitleText);
+      const perChunk = Math.ceil(subSentences.length / chunks.length);
+      for (let ci = 0; ci < chunks.length; ci++) {
+        chunks[ci].subtitle_text = subSentences.slice(ci * perChunk, (ci + 1) * perChunk).join("");
+      }
+    }
+
     console.log(
-      `  ${shotId}: ${text.length} chars → ${chunks.length} chunk(s) [${chunks.map((c) => c.sentence_count + "句").join(", ")}]`
+      `  ${shotId}: ${ttsText.length} chars → ${chunks.length} chunk(s) [${chunks.map((c) => c.sentence_count + "句").join(", ")}]`
     );
 
     allChunks.push(...chunks);
