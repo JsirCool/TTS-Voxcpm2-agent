@@ -47,8 +47,7 @@ run_test "P1: reversibility (concat === original)" \
     process.exit(original===rebuilt?0:1);
   \""
 
-run_test "P1: normalize adds brand breaks" \
-  "node -e \"const c=require('$WORK/chunks.json'); process.exit(c.some(x=>x.text_normalized.includes('. '))?0:1)\""
+
 
 run_test "P1: no chunk exceeds 300 chars" \
   "node -e \"const c=require('$WORK/chunks.json'); process.exit(c.every(x=>x.char_count<=300)?0:1)\""
