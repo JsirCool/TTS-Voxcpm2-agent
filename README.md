@@ -34,7 +34,7 @@ A Next.js wrapper in `web/` exposes the entire pipeline through a browser. Autho
 ```bash
 cd web
 npm install
-npm run dev   # http://localhost:3000
+npm run dev   # http://localhost:3010
 ```
 
 Features (browser only):

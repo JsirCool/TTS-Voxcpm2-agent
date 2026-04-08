@@ -122,7 +122,7 @@ export default function Page() {
           <span className="text-xs text-neutral-400 ml-1">v0.1</span>
         </div>
         <div className="ml-auto text-xs text-neutral-500 font-mono">
-          localhost:3000
+          localhost:3010
         </div>
       </header>
 
@@ -162,6 +162,7 @@ export default function Page() {
                   </span>
                 </div>
                 <ChunksTable
+                  episodeId={epDetail.episode.id}
                   chunks={epDetail.episode.chunks}
                   edits={edits}
                   editing={editing}

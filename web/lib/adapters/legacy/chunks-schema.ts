@@ -39,7 +39,16 @@ export const rawChunkSchema = z
     sentence_count: z.number().optional(),
     char_count: z.number(),
 
-    status: z.enum(["pending", "synth_done", "transcribed", "failed"]),
+    // 接受 raw status 全集(脚本会写 synth_failed/transcribe_failed),
+    // rawToChunk 时统一映射到 domain 的 4 值。
+    status: z.enum([
+      "pending",
+      "synth_done",
+      "transcribed",
+      "failed",
+      "synth_failed",
+      "transcribe_failed",
+    ]),
 
     // 旧版本:单 take 直接放 file 字段
     file: z.string().nullable().optional(),
@@ -66,7 +75,13 @@ export type RawTake = z.infer<typeof rawTakeSchema>;
 // 转换:RawChunk → domain Chunk
 // ============================================================
 
-import type { Chunk, Take } from "../../types";
+import type { Chunk, ChunkStatus, Take } from "../../types";
+
+/** 把 raw 5+ 状态映射到 domain 的 4 值。lastError 留 v0.2 引入。 */
+function mapStatus(raw: RawChunk["status"]): ChunkStatus {
+  if (raw === "synth_failed" || raw === "transcribe_failed") return "failed";
+  return raw;
+}
 
 export function rawToChunk(raw: RawChunk, index: number): Chunk {
   // 处理 multi-take vs 单 take 兼容
@@ -98,12 +113,17 @@ export function rawToChunk(raw: RawChunk, index: number): Chunk {
     text: raw.text,
     textNormalized: raw.text_normalized,
     subtitleText: raw.subtitle_text ?? null,
-    status: raw.status,
+    status: mapStatus(raw.status),
     takes,
     selectedTakeId,
     charCount: raw.char_count,
     boundaryHash: raw.boundary_hash,
-    metadata: {},
+    metadata: {
+      // 把 raw 失败子类型放进 metadata,前端可读出更细的错误类型
+      ...(raw.status === "synth_failed" || raw.status === "transcribe_failed"
+        ? { rawStatus: raw.status, errorMessage: raw.error }
+        : {}),
+    },
   };
 }
 

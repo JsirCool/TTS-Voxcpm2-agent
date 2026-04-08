@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import type { Chunk, ChunkEdit, EditBatch } from "@/lib/types";
-import { ChunkRow, type DirtyType } from "./ChunkRow";
+import { ChunkRow, type DirtyType, type DisplayMode } from "./ChunkRow";
 import { ChunkEditor } from "./ChunkEditor";
 
 interface Props {
+  episodeId: string;
   chunks: Chunk[];
   edits: EditBatch;
   editing: string | null;
@@ -26,6 +28,7 @@ function computeDirty(edit: ChunkEdit | undefined): DirtyType {
 }
 
 export function ChunksTable({
+  episodeId,
   chunks,
   edits,
   editing,
@@ -35,6 +38,8 @@ export function ChunksTable({
   onCancelEdit,
   onStage,
 }: Props) {
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("subtitle");
+
   if (chunks.length === 0) {
     return (
       <div className="px-6 py-12 text-center text-sm text-neutral-400">
@@ -51,7 +56,35 @@ export function ChunksTable({
           <th className="text-left font-medium py-2 w-12">St</th>
           <th className="text-left font-medium py-2 w-16">Dur</th>
           <th className="text-left font-medium py-2 w-12">Play</th>
-          <th className="text-left font-medium py-2 pr-6">Subtitle</th>
+          <th className="text-left font-medium py-2 pr-6">
+            <div className="flex items-center gap-2">
+              <span>{displayMode === "subtitle" ? "Subtitle" : "TTS Source"}</span>
+              <div className="inline-flex rounded border border-neutral-200 overflow-hidden normal-case">
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode("subtitle")}
+                  className={`px-1.5 py-0.5 text-[10px] font-normal ${
+                    displayMode === "subtitle"
+                      ? "bg-neutral-900 text-white"
+                      : "bg-white text-neutral-500 hover:bg-neutral-100"
+                  }`}
+                >
+                  字幕
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode("tts")}
+                  className={`px-1.5 py-0.5 text-[10px] font-normal border-l border-neutral-200 ${
+                    displayMode === "tts"
+                      ? "bg-neutral-900 text-white"
+                      : "bg-white text-neutral-500 hover:bg-neutral-100"
+                  }`}
+                >
+                  TTS源
+                </button>
+              </div>
+            </div>
+          </th>
           <th className="text-right font-medium py-2 pr-6 w-12">Edit</th>
         </tr>
       </thead>
@@ -63,7 +96,9 @@ export function ChunksTable({
           return (
             <RowGroup
               key={c.id}
+              episodeId={episodeId}
               chunk={c}
+              displayMode={displayMode}
               isEditing={isEditing}
               isPlaying={playingChunkId === c.id}
               dirty={dirty}
@@ -81,7 +116,9 @@ export function ChunksTable({
 }
 
 interface RowGroupProps {
+  episodeId: string;
   chunk: Chunk;
+  displayMode: DisplayMode;
   isEditing: boolean;
   isPlaying: boolean;
   dirty: DirtyType;
@@ -93,7 +130,9 @@ interface RowGroupProps {
 }
 
 function RowGroup({
+  episodeId,
   chunk,
+  displayMode,
   isEditing,
   isPlaying,
   dirty,
@@ -106,7 +145,9 @@ function RowGroup({
   return (
     <>
       <ChunkRow
+        episodeId={episodeId}
         chunk={chunk}
+        displayMode={displayMode}
         isPlaying={isPlaying}
         isEditing={isEditing}
         dirty={dirty}

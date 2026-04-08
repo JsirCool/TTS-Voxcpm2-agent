@@ -49,16 +49,36 @@ export class LegacyEpisodeStore implements EpisodeStore {
   async list(): Promise<EpisodeSummary[]> {
     const root = findRoot();
     const workRoot = path.join(root, ".work");
-    if (!fs.existsSync(workRoot)) return [];
+    const epRoot = path.join(root, "episodes");
 
-    const entries = fs
-      .readdirSync(workRoot, { withFileTypes: true })
-      .filter((d) => d.isDirectory());
+    // 联合 .work/ 子目录 和 episodes/ 下的 script 文件,
+    // 任一存在都算一个 episode
+    const ids = new Set<string>();
+
+    if (fs.existsSync(workRoot)) {
+      for (const d of fs.readdirSync(workRoot, { withFileTypes: true })) {
+        if (d.isDirectory()) ids.add(d.name);
+      }
+    }
+
+    if (fs.existsSync(epRoot)) {
+      for (const f of fs.readdirSync(epRoot)) {
+        // 优先匹配历史格式 script-<id>.json
+        let m = f.match(/^script-([a-zA-Z0-9_-]+)\.json$/);
+        if (m) {
+          ids.add(m[1]);
+          continue;
+        }
+        // 新格式 <id>.json (排除 script- 前缀)
+        m = f.match(/^([a-zA-Z0-9_-]+)\.json$/);
+        if (m && !m[1].startsWith("script-")) ids.add(m[1]);
+      }
+    }
 
     const out: EpisodeSummary[] = [];
-    for (const entry of entries) {
-      const id = entry.name;
+    for (const id of ids) {
       const status = this.inferStatus(id);
+      const scriptMissing = !fs.existsSync(episodeScriptPath(id));
       let chunkCount = 0;
       let updatedAt = new Date(0).toISOString();
       const cp = chunksPath(id);
@@ -72,19 +92,37 @@ export class LegacyEpisodeStore implements EpisodeStore {
           const wd = workDir(id);
           if (fs.existsSync(wd)) {
             updatedAt = fs.statSync(wd).mtime.toISOString();
+          } else if (!scriptMissing) {
+            // 全新 episode:还没 .work,用 script 文件 mtime
+            const sp = episodeScriptPath(id);
+            if (fs.existsSync(sp)) {
+              updatedAt = fs.statSync(sp).mtime.toISOString();
+            }
           }
         }
       } catch {
         // ignore parse errors in list view
       }
-      out.push({ id, status, currentStage: null, chunkCount, updatedAt });
+      out.push({
+        id,
+        status,
+        currentStage: null,
+        chunkCount,
+        updatedAt,
+        metadata: scriptMissing ? { scriptMissing: true } : {},
+      });
     }
     return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   }
 
   async get(id: EpisodeId): Promise<Episode | null> {
     const wd = workDir(id);
-    if (!fs.existsSync(wd)) return null;
+    const sp = episodeScriptPath(id);
+    const hasWork = fs.existsSync(wd);
+    const hasScript = fs.existsSync(sp);
+
+    // 既无 work 也无 script → 真不存在
+    if (!hasWork && !hasScript) return null;
 
     const status = this.inferStatus(id);
     const cp = chunksPath(id);
@@ -100,8 +138,13 @@ export class LegacyEpisodeStore implements EpisodeStore {
       const raw = JSON.parse(fs.readFileSync(cp, "utf-8"));
       const parsed = rawChunksFileSchema.parse(raw);
       chunks = parsed.map((r, i) => rawToChunk(r, i + 1));
-    } else {
+    } else if (hasWork) {
       const s = fs.statSync(wd);
+      updatedAt = s.mtime.toISOString();
+      createdAt = s.birthtime.toISOString();
+    } else {
+      // 只有 script,没 work
+      const s = fs.statSync(sp);
       updatedAt = s.mtime.toISOString();
       createdAt = s.birthtime.toISOString();
     }
@@ -111,6 +154,8 @@ export class LegacyEpisodeStore implements EpisodeStore {
       return acc + (t?.durationS ?? 0);
     }, 0);
 
+    const scriptMissing = !fs.existsSync(episodeScriptPath(id));
+
     return {
       id,
       status,
@@ -119,7 +164,7 @@ export class LegacyEpisodeStore implements EpisodeStore {
       totalDurationS,
       createdAt,
       updatedAt,
-      metadata: {},
+      metadata: scriptMissing ? { scriptMissing: true } : {},
     };
   }
 
@@ -162,10 +207,19 @@ export class LegacyEpisodeStore implements EpisodeStore {
 
   private inferStatus(id: EpisodeId): EpisodeStatus {
     const wd = workDir(id);
-    if (!fs.existsSync(wd)) return "empty";
+    const sp = episodeScriptPath(id);
+    const hasScript = fs.existsSync(sp);
+
+    // 没 work 没 script → 完全空
+    if (!fs.existsSync(wd)) {
+      return hasScript ? "ready" : "empty";
+    }
 
     const cp = chunksPath(id);
-    if (!fs.existsSync(cp)) return "empty";
+    // 有 work 但没 chunks.json → ready (script 存在) 或 empty
+    if (!fs.existsSync(cp)) {
+      return hasScript ? "ready" : "empty";
+    }
 
     if (fs.existsSync(runningFlagPath(id))) return "running";
 

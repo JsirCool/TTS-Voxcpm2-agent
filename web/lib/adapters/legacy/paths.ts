@@ -53,8 +53,19 @@ export function episodesDir(): string {
   return path.join(findRoot(), "episodes");
 }
 
+/**
+ * Find the script file for an episode.
+ * Tries new format `<id>.json` first, falls back to legacy `script-<id>.json`.
+ * Returns the canonical path even if the file doesn't exist (callers check fs.existsSync).
+ */
 export function episodeScriptPath(epId: string): string {
-  return path.join(episodesDir(), `${epId}.json`);
+  const dir = episodesDir();
+  const newPath = path.join(dir, `${epId}.json`);
+  if (fs.existsSync(newPath)) return newPath;
+  const legacyPath = path.join(dir, `script-${epId}.json`);
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  // Default to new format for create()
+  return newPath;
 }
 
 export function outputDir(epId: string): string {
@@ -64,4 +75,50 @@ export function outputDir(epId: string): string {
 export function previewPath(epId: string): string {
   // P6/V2 stage outputs `preview.html` (see scripts/v2-preview.js)
   return path.join(workDir(epId), "preview.html");
+}
+
+// ────────────────────────────────────────────────────────────────
+// .env loader
+// ────────────────────────────────────────────────────────────────
+//
+// Loads <root>/.env into a plain object,merge into spawn env so
+// child processes inherit FISH_TTS_KEY etc.
+// Cached after first call.
+
+let _envCache: Record<string, string> | null = null;
+
+export function loadDotenv(): Record<string, string> {
+  if (_envCache) return _envCache;
+  const envPath = path.join(findRoot(), ".env");
+  const out: Record<string, string> = {};
+  if (!fs.existsSync(envPath)) {
+    _envCache = out;
+    return out;
+  }
+  const text = fs.readFileSync(envPath, "utf-8");
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/i);
+    if (!m) continue;
+    let val = m[2].trim();
+    // strip surrounding quotes
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    // strip inline comment (# preceded by space)
+    const hashIdx = val.indexOf(" #");
+    if (hashIdx >= 0) val = val.slice(0, hashIdx).trim();
+    out[m[1]] = val;
+  }
+  _envCache = out;
+  return out;
+}
+
+/** Merge .env into process.env shape for spawn() */
+export function spawnEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ...loadDotenv() };
 }

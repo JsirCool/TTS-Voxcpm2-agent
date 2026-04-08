@@ -1,6 +1,8 @@
 .venv/
 .work/
-/episodes/
+# 排除真实 episode script,保留 demo fixture
+/episodes/*.json
+!/episodes/script-demo-*.json
 node_modules/
 *.wav
 *.mp3

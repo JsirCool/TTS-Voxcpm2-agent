@@ -1,14 +1,19 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type { Chunk, ChunkEdit, ChunkStatus } from "@/lib/types";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
+import { getAudioUrl } from "@/lib/hooks";
 import { KaraokeSubtitle } from "./KaraokeSubtitle";
 import { TakeSelector } from "./TakeSelector";
 
 export type DirtyType = null | "tts" | "subtitle" | "both";
+export type DisplayMode = "subtitle" | "tts";
 
 interface Props {
+  episodeId: string;
   chunk: Chunk;
+  displayMode: DisplayMode;
   isPlaying: boolean;
   isEditing: boolean;
   dirty: DirtyType;
@@ -33,7 +38,9 @@ function statusIcon(status: ChunkStatus) {
 }
 
 export function ChunkRow({
+  episodeId,
   chunk,
+  displayMode,
   isPlaying,
   isEditing,
   dirty,
@@ -44,12 +51,48 @@ export function ChunkRow({
 }: Props) {
   const isDirty = dirty !== null;
   const hasSubField = chunk.subtitleText != null;
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [currentTime, setCurrentTime] = useState(0);
 
-  // 当前生效的 display 文本:优先暂存中的 subtitle 编辑
-  const displaySubtitle =
-    edit?.subtitleText !== undefined
-      ? stripControlMarkers(edit.subtitleText)
-      : getDisplaySubtitle(chunk);
+  // 真音频:跟随 isPlaying 调 play/pause + 监听 timeupdate
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (isPlaying) {
+      // 不要重置 currentTime — 允许从 seekTo 设的位置继续
+      el.play().catch((e) => {
+        console.warn("audio play failed", e);
+      });
+    } else {
+      el.pause();
+    }
+  }, [isPlaying]);
+
+  const currentTakeForUrl = chunk.takes.find((t) => t.id === chunk.selectedTakeId);
+  // cache-bust: 用 take.createdAt 作为 query string,chunk 重做后 take 变,URL 变
+  const cacheBust = currentTakeForUrl?.createdAt
+    ? `?v=${encodeURIComponent(currentTakeForUrl.createdAt)}`
+    : `?v=${chunk.charCount}`;
+  const audioUrl =
+    chunk.selectedTakeId && (chunk.status === "synth_done" || chunk.status === "transcribed")
+      ? getAudioUrl(episodeId, chunk.id, chunk.selectedTakeId) + cacheBust
+      : "";
+
+  // 当前显示的文本:由 displayMode 决定字段,edit 暂存优先
+  let displayText: string;
+  if (displayMode === "tts") {
+    // TTS 源:保留控制标记 [break]/[long break]/[breath],让作者看到
+    displayText =
+      edit?.textNormalized !== undefined
+        ? edit.textNormalized
+        : chunk.textNormalized;
+  } else {
+    // 字幕:strip 控制标记 + subtitleText 优先
+    displayText =
+      edit?.subtitleText !== undefined
+        ? stripControlMarkers(edit.subtitleText)
+        : getDisplaySubtitle(chunk);
+  }
 
   const currentTake = chunk.takes.find((t) => t.id === chunk.selectedTakeId);
   const durationS = currentTake?.durationS ?? 0;
@@ -58,6 +101,18 @@ export function ChunkRow({
   const canPlay =
     (chunk.status === "synth_done" || chunk.status === "transcribed") &&
     !isDirty;
+
+  // 点字幕跳到对应位置 + 自动播放
+  const handleSeek = (timeS: number) => {
+    if (!canPlay) return;
+    const el = audioRef.current;
+    const target = Math.max(0, Math.min(durationS, timeS));
+    if (el) {
+      el.currentTime = target;
+      setCurrentTime(target);
+    }
+    if (!isPlaying) onPlay(); // 触发 parent 切到 playing
+  };
 
   const rowBg = isPlaying
     ? "bg-blue-50 shadow-[inset_3px_0_0_#2563eb]"
@@ -110,10 +165,12 @@ export function ChunkRow({
         <div className="flex items-start flex-wrap">
           <div className="flex-1 min-w-0">
             <KaraokeSubtitle
-              text={displaySubtitle}
+              text={displayText}
               durationS={durationS}
               isPlaying={isPlaying}
+              currentTime={currentTime}
               baseColorClass={baseColor}
+              onSeek={canPlay ? handleSeek : undefined}
             />
           </div>
           {dirtyBadge ? (
@@ -126,6 +183,20 @@ export function ChunkRow({
           <TakeSelector
             takes={chunk.takes}
             selectedTakeId={chunk.selectedTakeId}
+          />
+        ) : null}
+        {audioUrl ? (
+          <audio
+            key={audioUrl /* 重做后强制重建 element */}
+            ref={audioRef}
+            src={audioUrl}
+            preload="none"
+            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+            onEnded={() => {
+              setCurrentTime(0);
+              onPlay(); // 通知 parent 切回 idle
+            }}
+            className="hidden"
           />
         ) : null}
       </td>

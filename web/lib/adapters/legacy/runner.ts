@@ -25,10 +25,12 @@ import { DomainError } from "@/lib/types";
 import {
   audioDir,
   chunksPath,
+  episodeScriptPath,
   findRoot,
   lastExitPath,
   runLogPath,
   runningFlagPath,
+  spawnEnv,
   workDir,
 } from "./paths";
 
@@ -61,7 +63,7 @@ export class LegacyPipelineRunner implements PipelineRunner {
   ): Promise<number> {
     return new Promise((resolve, reject) => {
       const root = findRoot();
-      const child = spawn(cmd, args, { cwd: root, env: process.env });
+      const child = spawn(cmd, args, { cwd: root, env: spawnEnv() });
       child.stdout.on("data", (d) => {
         try {
           fs.appendFileSync(logFile, d);
@@ -121,6 +123,15 @@ export class LegacyPipelineRunner implements PipelineRunner {
     epId: EpisodeId,
     _options?: { mode?: "fresh" | "text-only"; force?: boolean },
   ): Promise<OperationResult> {
+    // Pre-flight: ensure script.json exists, otherwise run.sh will explode
+    if (!fs.existsSync(episodeScriptPath(epId))) {
+      throw new DomainError(
+        `script not found for episode ${epId} (episodes/${epId}.json missing). ` +
+          `This episode has runtime data in .work/ but no source script — orphan episode.`,
+        "invalid_state",
+      );
+    }
+
     const handle = await this.locks.acquire(
       { type: "global" },
       `runFull:${epId}`,
@@ -141,12 +152,14 @@ export class LegacyPipelineRunner implements PipelineRunner {
     this.jobs.set(jobId, job);
 
     const root = findRoot();
-    const scriptRel = `episodes/${epId}.json`;
+    // Resolve actual script path (new or legacy naming) → make relative to root
+    const scriptAbs = episodeScriptPath(epId);
+    const scriptRel = path.relative(root, scriptAbs);
 
     try {
       const child = spawn("bash", ["run.sh", scriptRel, epId], {
         cwd: root,
-        env: process.env,
+        env: spawnEnv(),
       });
       job.child = child;
       child.stdout.on("data", (d) => {
@@ -275,7 +288,7 @@ export class LegacyPipelineRunner implements PipelineRunner {
         fs.appendFileSync(logFile, `\n=== Apply P5/P6 ===\n`);
         const c5 = await this.spawnAndWait(
           "bash",
-          ["run.sh", `episodes/${epId}.json`, epId, "--from", "p5"],
+          ["run.sh", path.relative(findRoot(), episodeScriptPath(epId)), epId, "--from", "p5"],
           logFile,
         );
         if (c5 !== 0) throw new Error(`run.sh --from p5 exit ${c5}`);
@@ -523,7 +536,7 @@ export class LegacyPipelineRunner implements PipelineRunner {
         fs.appendFileSync(logFile, `\n=== Finalize P5/P6 ===\n`);
         const c5 = await this.spawnAndWait(
           "bash",
-          ["run.sh", `episodes/${epId}.json`, epId, "--from", "p5"],
+          ["run.sh", path.relative(findRoot(), episodeScriptPath(epId)), epId, "--from", "p5"],
           logFile,
         );
         if (c5 !== 0) throw new Error(`run.sh --from p5 exit ${c5}`);

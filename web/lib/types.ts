@@ -114,6 +114,8 @@ export interface EpisodeSummary {
   currentStage: string | null;
   chunkCount: number;
   updatedAt: string;
+  /** 扩展位,例如 { scriptMissing: true } */
+  metadata?: Record<string, unknown>;
 }
 
 // ============================================================

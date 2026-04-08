@@ -47,11 +47,13 @@ export function EpisodeSidebar({
               : ep.status === "done"
                 ? String(ep.chunkCount)
                 : ep.status;
+          const orphan = Boolean(ep.metadata?.scriptMissing);
           return (
             <button
               key={ep.id}
               type="button"
               onClick={() => onSelect(ep.id)}
+              title={orphan ? "脚本缺失 (orphan):episodes/<id>.json 不存在" : ""}
               className={`w-full text-left px-2.5 py-2 rounded cursor-pointer flex items-center gap-2 mb-0.5 ${
                 sel ? "bg-neutral-900 text-white" : "hover:bg-neutral-100"
               }`}
@@ -59,7 +61,16 @@ export function EpisodeSidebar({
               <span
                 className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}
               />
-              <span className="font-medium text-sm">{ep.id}</span>
+              <span className={`font-medium text-sm ${orphan ? "italic opacity-70" : ""}`}>
+                {ep.id}
+              </span>
+              {orphan ? (
+                <span
+                  className={`text-[10px] ${sel ? "text-red-300" : "text-red-500"}`}
+                >
+                  ⚠
+                </span>
+              ) : null}
               <span
                 className={`ml-auto text-[11px] font-mono ${
                   sel ? "text-neutral-300" : "text-neutral-400"
