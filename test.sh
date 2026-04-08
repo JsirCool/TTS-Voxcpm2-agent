@@ -6,8 +6,7 @@
 #
 # Usage:
 #   bash test.sh --p1-only    # P1 离线测试（秒完，无需 API）
-#   bash test.sh --no-p4      # P1→P3→P5→P6→V2（需 FISH_TTS_KEY，跳 Claude）
-#   bash test.sh              # 全量含 P4（需 FISH_TTS_KEY + Claude API）
+#   bash test.sh              # P1→P2→P3→P5→P6→V2（需 FISH_TTS_KEY）
 #   bash test.sh --clean      # 清缓存后全量重跑
 
 set -euo pipefail
@@ -34,7 +33,7 @@ trap cleanup EXIT
 # 启动前清理残留的 P3 进程
 source "$HARNESS_DIR/scripts/stop-p3-server.sh" "$WORK" "$P3_PORT"
 
-mkdir -p "$WORK/audio" "$WORK/transcripts" "$WORK/validation" "$WORK/output"
+mkdir -p "$WORK/audio" "$WORK/transcripts" "$WORK/output"
 
 # 日志持久化：终端 + 文件
 LOG="$WORK/test.log"
@@ -137,69 +136,12 @@ echo ""
 echo "--- Post-P3 Precheck ---"
 node "$HARNESS_DIR/scripts/precheck.js" --stage p3 --chunks "$WORK/chunks.json" --transcripts "$WORK/transcripts" || echo "  [WARN] precheck issues found, continuing..."
 
-# ========================================
-# Text Diff: deterministic comparison (pre-P4)
-# ========================================
-echo ""
-echo "--- Text Diff: Deterministic Comparison ---"
-node "$HARNESS_DIR/scripts/text-diff.js" \
-  --chunks "$WORK/chunks.json" \
-  --transcripts "$WORK/transcripts" || echo "  [WARN] text-diff issues found, continuing..."
-
-# ========================================
-# P4: Claude 校验（full 模式，单 chunk 测试）
-# ========================================
-if [[ "$MODE" != "--no-p4" ]]; then
-  echo ""
-  echo "--- P4: Claude Validation (shot01 only) ---"
-
-  # 确保 P3 server 在跑
-  if ! curl -s --noproxy 127.0.0.1 "http://127.0.0.1:$P3_PORT/health" 2>/dev/null | grep -q ok; then
-    source "$HARNESS_DIR/scripts/start-p3-server.sh" "$P3_PORT" "$HARNESS_DIR/.venv/bin/activate" "$HARNESS_DIR/scripts/p3-transcribe.py" "$WORK"
-  fi
-
-  node "$HARNESS_DIR/scripts/p4-validate.js" \
-    --chunks "$WORK/chunks.json" \
-    --transcripts "$WORK/transcripts" \
-    --audiodir "$WORK/audio" \
-    --outdir "$WORK/validation" \
-    --p3-server "http://127.0.0.1:$P3_PORT" \
-    --chunk shot01_chunk01 || true
-
-  ROUNDS=$(ls "$WORK/validation/" 2>/dev/null | grep shot01 | wc -l | tr -d ' ')
-  echo "  shot01: $ROUNDS validation round(s)"
-
-  # P4 校验报告汇总
-  echo ""
-  echo "--- P4 Validation Report ---"
-  for f in "$WORK/validation"/shot*_round*.json; do
-    [[ -f "$f" ]] || continue
-    node -e "
-      const r=require('$f');
-      const name=require('path').basename('$f');
-      const status=r.passed?'PASS':'FAIL';
-      const issues=(r.issues||[]).filter(i=>i.severity==='high');
-      console.log('  '+name+': '+status+(issues.length?' ('+issues.length+' high)':''));
-      issues.forEach(i=>console.log('    ['+i.type+'] \"'+i.original+'\" → \"'+i.transcribed+'\"'));
-      if(r.summary) console.log('    → '+r.summary);
-    "
-  done
-fi
-
 # 关闭 P3 server
 source "$HARNESS_DIR/scripts/stop-p3-server.sh" "$WORK" "$P3_PORT"
 
 # ========================================
 # P5 + P6 + V2
 # ========================================
-# 标记 transcribed 为 validated（不覆盖 needs_human）
-node -e "
-  const fs=require('fs');
-  const c=require('$WORK/chunks.json');
-  c.forEach(x=>{if(x.status==='transcribed')x.status='validated'});
-  fs.writeFileSync('$WORK/chunks.json',JSON.stringify(c,null,2));
-"
-
 echo ""
 echo "--- P5: Subtitles ---"
 node "$HARNESS_DIR/scripts/p5-subtitles.js" \
@@ -232,12 +174,10 @@ echo "   Log:        $LOG"
 echo "   Chunks:     $WORK/chunks.json"
 echo "   Audio:      $WORK/audio/"
 echo "   Transcripts: $WORK/transcripts/"
-echo "   Validation: $WORK/validation/"
 echo "   Subtitles:  $WORK/subtitles.json"
 echo "   Preview:    $WORK/preview.html"
 echo ""
 echo " To review:"
 echo "   open $WORK/preview.html          # 字幕预览"
 echo "   cat $LOG                          # 完整日志"
-echo "   cat $WORK/validation/*.json       # P4 校验详情"
 open "$WORK/preview.html" 2>/dev/null || true

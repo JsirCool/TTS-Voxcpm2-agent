@@ -33,19 +33,6 @@
 产物: per-shot WAV + subtitles.json + durations.json + preview.html
 ```
 
-### 完整流程（含 P4，当前未使用）
-
-```
-P1 → P2 → ✓2 → P3 → ✓3 → text-diff → P4(Claude) → P5 → P6 → ✓P6 → V2
-                                         │
-                                         └→ FAIL → 改 text_normalized → P2 → P3 → P4（最多3轮）
-```
-
-P4 Claude 自动校验/修复循环代码保留，但生产中跳过。原因：
-- TTS 非确定性导致自动修复效果不稳定
-- S2-Pro 引擎质量提升后，多数发音问题可通过控制标记解决
-- 人工修改 text_normalized + 重做比 LLM 自动修复更可控
-
 ### Harness 四要素映射
 
 | 要素 | 实现 |
@@ -62,12 +49,10 @@ P4 Claude 自动校验/修复循环代码保留，但生产中跳过。原因：
 ### chunks.json — 状态机
 
 ```
-pending → synth_done → transcribed → validated → (P5/P6 消费)
+pending → synth_done → transcribed → (P5/P6 消费)
             │              │
        synth_failed   transcribe_failed
 ```
-
-生产流程中 P3 完成（transcribed）后直接进 P5，不经过 P4 校验。
 
 ### chunk 数据结构
 
@@ -81,8 +66,7 @@ pending → synth_done → transcribed → validated → (P5/P6 消费)
   "char_count": 120,
   "status": "pending",
   "duration_s": 0,
-  "file": null,
-  "validate_round": 0
+  "file": null
 }
 ```
 
@@ -149,25 +133,6 @@ S2-Pro 控制标记（`[break]`/`[breath]`/phoneme）原样保留在 `text` 和 
 - 输出 segment-level + word-level 时间戳
 - Server 模式常驻，模型加载一次，批量处理所有 chunk
 - 失败的 chunk 标记 `transcribe_failed` 并 exit(1)
-
----
-
-## P4 — Claude Agent（保留，生产中跳过）
-
-通过 Anthropic API 调用 Claude，做转写 vs 原文的语义校验。
-
-### 自动修复循环（最多 3 轮）
-
-```
-Round 1: Claude 校验
-  ├─ PASS → validated
-  ├─ 只有 low severity → 自动放行
-  └─ 有 high severity → Claude 生成 text_normalized 修改
-      → 自动重跑 P2 → P3 → Round 2 校验
-        └─ ... → Round 3 → 仍 FAIL → needs_human
-```
-
-> 跨期记忆（normalize-patches / tts-known-issues）的读写已移除。这些机制在 TTS 非确定性场景下不可靠——同一文本下次合成可能读对，之前的补丁反而过度修复。
 
 ---
 
@@ -255,10 +220,8 @@ tts-harness/
 │   ├── p1-chunk.js           # 确定性切分（normalize 只 trim）
 │   ├── p2-synth.js           # Fish TTS Agent（S2-Pro）
 │   ├── p3-transcribe.py      # WhisperX Agent
-│   ├── p4-validate.js        # Claude Agent（保留，生产跳过）
 │   ├── p5-subtitles.js       # 确定性字幕（strip 控制标记）
 │   ├── p6-concat.js          # 确定性拼接
-│   ├── text-diff.js          # 确定性文本比对（P4 前置）
 │   ├── precheck.js           # 确定性预检（Post-P2/P3）
 │   ├── postcheck-p6.js       # 端到端验证
 │   ├── trace.js              # JSONL trace 工具
@@ -282,9 +245,6 @@ tts-harness/
 ```bash
 # 完整运行
 bash run.sh script/brief01-script.json brief01
-
-# 跳过 P4（生产默认）
-bash run.sh script/brief01-script.json brief01 --from p5  # 已有转写时
 
 # 从某步继续
 bash run.sh script/brief01-script.json brief01 --from p3

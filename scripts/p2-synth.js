@@ -56,10 +56,6 @@ if (!chunksPath || !outdir) {
   process.exit(1);
 }
 
-// =============================================================
-// TTS API — standard https.request (proxy via HTTPS_PROXY env)
-// =============================================================
-
 function callTTS(text) {
   return new Promise((resolve, reject) => {
     const https = require("https");

@@ -3,7 +3,7 @@
 P3 — WhisperX Agent（HTTP Server + Batch 模式）
 
 两种运行方式：
-  1. Server 模式：加载模型后常驻，暴露 HTTP 接口供 P4 retry 调用
+  1. Server 模式：加载模型后常驻，暴露 HTTP 接口供批量转写调用
      python scripts/p3-transcribe.py --server --port 5555
 
   2. Client 模式（通过 p3-client.js 或直接 curl）：

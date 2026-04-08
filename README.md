@@ -25,15 +25,12 @@ Script (JSON)
 Output: per-shot WAV + subtitles.json + durations.json + preview.html
 ```
 
-Production pipeline: **P1 → P2 → P3 → P5 → P6 → V2** (P4 Claude validation skipped).
-
-P4 (Claude Agent for auto-fix) is available but not used in production — English pronunciation issues are resolved by manually editing `text_normalized` and re-running P2.
+Pipeline: **P1 → P2 → P3 → P5 → P6 → V2**. Pronunciation issues are resolved by manually editing `text_normalized` and re-running from P2.
 
 ### Supported Services
 
 - **TTS**: [Fish Audio](https://fish.audio) S2-Pro — `normalize: false`, supports `[break]`/`[breath]` control tags
 - **Transcription**: [WhisperX](https://github.com/m-bain/whisperX) (local, no API needed)
-- **Validation** (optional): [Claude API](https://docs.anthropic.com/) (Anthropic) — only needed if running P4
 
 ### Prerequisites
 
@@ -165,10 +162,7 @@ bash test/run-unit.sh
 # P1 only, no API needed
 bash test.sh --p1-only
 
-# P1→P6, skip P4 (needs FISH_TTS_KEY)
-bash test.sh --no-p4
-
-# Full with P4 (needs FISH_TTS_KEY + Claude API)
+# Full P1→P6 (needs FISH_TTS_KEY)
 bash test.sh
 ```
 

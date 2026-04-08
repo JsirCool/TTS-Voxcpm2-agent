@@ -113,7 +113,7 @@ function main() {
   // 按 shot 分组
   const shotMap = new Map();
   for (const chunk of chunks) {
-    if (chunk.status !== "validated" && chunk.status !== "transcribed") continue;
+    if (chunk.status !== "transcribed") continue;
     const shotId = chunk.shot_id;
     if (!shotMap.has(shotId)) shotMap.set(shotId, []);
     shotMap.get(shotId).push(chunk);

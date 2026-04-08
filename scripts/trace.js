@@ -29,14 +29,6 @@ function summary(tracePath) {
     const avg = stats.count ? Math.round(stats.total_ms / stats.count) : 0;
     console.log(`  ${phase}: ${stats.count} done, avg ${avg}ms, ${stats.errors} errors`);
   }
-
-  // P4 retry stats
-  const p4Rounds = lines.filter(l => l.phase === "p4" && l.event === "done");
-  if (p4Rounds.length > 0) {
-    const rounds = p4Rounds.map(l => l.round || 1);
-    const avgRound = (rounds.reduce((a, b) => a + b, 0) / rounds.length).toFixed(1);
-    console.log(`  p4 avg rounds: ${avgRound}`);
-  }
 }
 
 module.exports = { trace, summary };

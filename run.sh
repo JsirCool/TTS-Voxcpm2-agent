@@ -32,7 +32,6 @@ HARNESS_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$HARNESS_DIR/.work/$EPISODE"
 AUDIO_DIR="$WORK_DIR/audio"
 TRANSCRIPT_DIR="$WORK_DIR/transcripts"
-VALIDATION_DIR="$WORK_DIR/validation"
 OUTPUT_DIR="$WORK_DIR/output"
 
 CHUNKS="$WORK_DIR/chunks.json"
@@ -49,7 +48,7 @@ else
   RESOLVED_SCRIPT="$HARNESS_DIR/$SCRIPT_PATH"
 fi
 
-mkdir -p "$WORK_DIR" "$AUDIO_DIR" "$TRANSCRIPT_DIR" "$VALIDATION_DIR" "$OUTPUT_DIR"
+mkdir -p "$WORK_DIR" "$AUDIO_DIR" "$TRANSCRIPT_DIR" "$OUTPUT_DIR"
 
 # Input hash — detect script changes, force P1 re-run
 SCRIPT_HASH=$(md5 -q "$RESOLVED_SCRIPT" 2>/dev/null || md5sum "$RESOLVED_SCRIPT" | cut -d' ' -f1)
@@ -66,7 +65,7 @@ if [[ "$FROM_STEP" == "p1" ]]; then
 fi
 
 should_run() {
-  local steps=("p1" "p2" "check2" "p3" "check3" "diff" "p4" "p5" "p6" "checkp6" "v2")
+  local steps=("p1" "p2" "check2" "p3" "check3" "p5" "p6" "checkp6" "v2")
   local found=false
   for s in "${steps[@]}"; do
     [[ "$s" == "$FROM_STEP" ]] && found=true
@@ -111,11 +110,11 @@ if should_run check2; then
     --audiodir "$AUDIO_DIR"
 fi
 
-# --- P3: WhisperX Agent (start server, batch transcribe, keep alive for P4) ---
+# --- P3: WhisperX Agent (start server, batch transcribe) ---
 P3_PORT=5555
 P3_PID=""
 
-if should_run p3 || should_run p4; then
+if should_run p3; then
   echo ""
   echo "=== P3: Starting WhisperX Agent Server (port $P3_PORT) ==="
   source "$HARNESS_DIR/scripts/start-p3-server.sh" "$P3_PORT" "$VENV" "$HARNESS_DIR/scripts/p3-transcribe.py" "$WORK_DIR"
@@ -139,34 +138,6 @@ if should_run check3; then
     --stage p3 \
     --chunks "$CHUNKS" \
     --transcripts "$TRANSCRIPT_DIR"
-fi
-
-# --- Text diff: deterministic comparison (pre-P4) ---
-if should_run diff; then
-  echo ""
-  echo "=== Text Diff: Deterministic Comparison ==="
-  node "$HARNESS_DIR/scripts/text-diff.js" \
-    --chunks "$CHUNKS" \
-    --transcripts "$TRANSCRIPT_DIR"
-fi
-
-# --- P4: Claude Agent (validate + auto-fix loop, uses P3 server for retranscribe) ---
-if should_run p4; then
-  echo ""
-  echo "=== P4: Validation + Auto-Fix (Claude Agent) ==="
-  node "$HARNESS_DIR/scripts/p4-validate.js" \
-    --chunks "$CHUNKS" \
-    --transcripts "$TRANSCRIPT_DIR" \
-    --audiodir "$AUDIO_DIR" \
-    --outdir "$VALIDATION_DIR" \
-    --p3-server "http://127.0.0.1:$P3_PORT" \
-    --trace "$TRACE" \
-    --harness-dir "$HARNESS_DIR"
-  echo ""
-  echo ">>> V1 Review: Check validation results above <<<"
-  echo "    All chunks passed or only low severity — press Enter to continue"
-  echo "    Need manual intervention — press Ctrl+C to exit"
-  read -r
 fi
 
 # --- Shutdown P3 server ---
