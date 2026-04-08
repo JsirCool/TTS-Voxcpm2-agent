@@ -1,6 +1,6 @@
 .venv/
 .work/
-episodes/
+/episodes/
 node_modules/
 *.wav
 *.mp3
