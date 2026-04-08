@@ -27,6 +27,28 @@ Output: per-shot WAV + subtitles.json + durations.json + preview.html
 
 Pipeline: **P1 → P2 → P3 → P5 → P6 → V2**. Pronunciation issues are resolved by manually editing `text_normalized` and re-running from P2.
 
+### Web UI (v0.1 MVP)
+
+A Next.js wrapper in `web/` exposes the entire pipeline through a browser. Author never touches the terminal after starting the dev server.
+
+```bash
+cd web
+npm install
+npm run dev   # http://localhost:3000
+```
+
+Features (browser only):
+- Episode list + status (auto-refresh)
+- Per-chunk play with karaoke-style subtitle highlighting
+- Inline edit of `text_normalized` / `subtitle_text` (3-field editor)
+- Stage edits → batch Apply (smart pipeline routing: TTS-only edits trigger P5/P6 only)
+- Multi-take retry (`POST /api/episodes/:id/chunks/:cid/retry?count=N`)
+- Export to Remotion project directory
+
+Architecture: clean Domain Layer (`web/lib/ports/*`) + Legacy Adapter (`web/lib/adapters/legacy/*`).
+Underlying scripts can be refactored without touching frontend or Route Handlers.
+See `mvp-flow.md` for full design and roadmap.
+
 ### Supported Services
 
 - **TTS**: [Fish Audio](https://fish.audio) S2-Pro — `normalize: false`, supports `[break]`/`[breath]` control tags

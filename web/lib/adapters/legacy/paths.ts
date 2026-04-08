@@ -62,5 +62,6 @@ export function outputDir(epId: string): string {
 }
 
 export function previewPath(epId: string): string {
-  return path.join(workDir(epId), "v2-preview.html");
+  // P6/V2 stage outputs `preview.html` (see scripts/v2-preview.js)
+  return path.join(workDir(epId), "preview.html");
 }
