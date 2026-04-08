@@ -156,6 +156,34 @@ export class LegacyEpisodeStore implements EpisodeStore {
 
     const scriptMissing = !fs.existsSync(episodeScriptPath(id));
 
+    // 读 script.json 让前端能在 ready 状态看到原始 segments
+    let scriptTitle: string | undefined;
+    let scriptDescription: string | undefined;
+    let scriptSegments: import("@/lib/types").ScriptSegment[] | undefined;
+    if (!scriptMissing) {
+      try {
+        const sp = episodeScriptPath(id);
+        const raw = JSON.parse(fs.readFileSync(sp, "utf-8")) as {
+          title?: string;
+          description?: string;
+          segments?: import("@/lib/types").ScriptSegment[];
+        };
+        if (typeof raw.title === "string") scriptTitle = raw.title;
+        if (typeof raw.description === "string")
+          scriptDescription = raw.description;
+        if (Array.isArray(raw.segments)) {
+          scriptSegments = raw.segments.map((s) => ({
+            id: s.id,
+            type: s.type,
+            topic: s.topic,
+            text: s.text,
+          }));
+        }
+      } catch {
+        // 解析失败容忍 — 旧 script 可能格式不一
+      }
+    }
+
     return {
       id,
       status,
@@ -165,6 +193,9 @@ export class LegacyEpisodeStore implements EpisodeStore {
       createdAt,
       updatedAt,
       metadata: scriptMissing ? { scriptMissing: true } : {},
+      scriptTitle,
+      scriptDescription,
+      scriptSegments,
     };
   }
 

@@ -16,6 +16,8 @@ import { EditBanner } from "@/components/EditBanner";
 import { ChunksTable } from "@/components/ChunksTable";
 import { LogViewer } from "@/components/LogViewer";
 import { NewEpisodeDialog } from "@/components/NewEpisodeDialog";
+import { ScriptPreview } from "@/components/ScriptPreview";
+import { StageProgress } from "@/components/StageProgress";
 
 export default function Page() {
   const [selectedId, setSelectedId] = useState<string | null>("ch04");
@@ -143,6 +145,16 @@ export default function Page() {
                 onRun={handleRun}
                 onExport={handleExport}
               />
+              <StageProgress
+                status={epDetail.episode.status}
+                running={epDetail.running}
+                currentStage={epDetail.currentStage}
+                totalChunks={epDetail.episode.chunks.length}
+                lastLogLine={
+                  // 倒序找最后一个非空行
+                  [...epDetail.logTail].reverse().find((l) => l && l.trim()) ?? undefined
+                }
+              />
               <EditBanner
                 ttsCount={dirtyCount.tts}
                 subCount={dirtyCount.sub}
@@ -150,32 +162,57 @@ export default function Page() {
                 onDiscard={() => setEdits({})}
               />
               <div className="flex-1 overflow-y-auto bg-white">
-                <div className="px-6 py-2 sticky top-0 bg-white border-b border-neutral-100 flex items-center z-10">
-                  <h3 className="text-xs font-medium text-neutral-500 uppercase tracking-wide">
-                    Chunks
-                  </h3>
-                  <span className="ml-2 text-[11px] text-neutral-400">
-                    {epDetail.episode.chunks.length} 项
-                  </span>
-                  <span className="ml-auto text-[11px] text-neutral-400">
-                    点击 ✎ → 展开编辑
-                  </span>
-                </div>
-                <ChunksTable
-                  episodeId={epDetail.episode.id}
-                  chunks={epDetail.episode.chunks}
-                  edits={edits}
-                  editing={editing}
-                  playingChunkId={playingChunkId}
-                  onPlay={(cid) =>
-                    setPlayingChunkId((prev) => (prev === cid ? null : cid))
-                  }
-                  onEdit={(cid) =>
-                    setEditing((prev) => (prev === cid ? null : cid))
-                  }
-                  onCancelEdit={() => setEditing(null)}
-                  onStage={handleStage}
-                />
+                {epDetail.episode.chunks.length === 0 &&
+                epDetail.episode.scriptSegments &&
+                epDetail.episode.scriptSegments.length > 0 ? (
+                  <>
+                    <div className="px-6 py-2 sticky top-0 bg-white border-b border-neutral-100 flex items-center z-10">
+                      <h3 className="text-xs font-medium text-neutral-500 uppercase tracking-wide">
+                        Script Preview
+                      </h3>
+                      <span className="ml-2 text-[11px] text-neutral-400">
+                        {epDetail.episode.scriptSegments.length} segments
+                      </span>
+                      <span className="ml-auto text-[11px] text-neutral-400">
+                        生成后会被 P1 切成 chunks
+                      </span>
+                    </div>
+                    <ScriptPreview
+                      title={epDetail.episode.scriptTitle}
+                      description={epDetail.episode.scriptDescription}
+                      segments={epDetail.episode.scriptSegments}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <div className="px-6 py-2 sticky top-0 bg-white border-b border-neutral-100 flex items-center z-10">
+                      <h3 className="text-xs font-medium text-neutral-500 uppercase tracking-wide">
+                        Chunks
+                      </h3>
+                      <span className="ml-2 text-[11px] text-neutral-400">
+                        {epDetail.episode.chunks.length} 项
+                      </span>
+                      <span className="ml-auto text-[11px] text-neutral-400">
+                        点击 ✎ → 展开编辑
+                      </span>
+                    </div>
+                    <ChunksTable
+                      episodeId={epDetail.episode.id}
+                      chunks={epDetail.episode.chunks}
+                      edits={edits}
+                      editing={editing}
+                      playingChunkId={playingChunkId}
+                      onPlay={(cid) =>
+                        setPlayingChunkId((prev) => (prev === cid ? null : cid))
+                      }
+                      onEdit={(cid) =>
+                        setEditing((prev) => (prev === cid ? null : cid))
+                      }
+                      onCancelEdit={() => setEditing(null)}
+                      onStage={handleStage}
+                    />
+                  </>
+                )}
               </div>
               <LogViewer log={epDetail.logTail} />
             </>

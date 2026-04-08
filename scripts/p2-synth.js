@@ -15,6 +15,13 @@ const path = require("path");
 const { execSync } = require("child_process");
 const { trace } = require("./trace");
 
+// 国内 DNS 会污染 fish.audio,Fish API 必须走代理。
+// Node 24+ 原生 fetch 在 NODE_USE_ENV_PROXY=1 时自动读 HTTPS_PROXY/NO_PROXY。
+// 这里只确保该 flag 被设置,真正的代理 URL 来自 .env / 环境变量。
+if ((process.env.HTTPS_PROXY || process.env.HTTP_PROXY) && !process.env.NODE_USE_ENV_PROXY) {
+  process.env.NODE_USE_ENV_PROXY = "1";
+}
+
 // --- 配置（env 优先 → config.json → 默认值）---
 const _p2Defaults = { concurrency: 3, max_retries: 3, default_speed: 1.0, model: "s1" };
 try {
@@ -56,50 +63,33 @@ if (!chunksPath || !outdir) {
   process.exit(1);
 }
 
-function callTTS(text) {
-  return new Promise((resolve, reject) => {
-    const https = require("https");
-    const url = new URL(TTS_API_URL);
-    const payload = { text, model: TTS_MODEL, normalize: false };
-    if (TTS_REFERENCE_ID) payload.reference_id = TTS_REFERENCE_ID;
-    if (_p2Defaults.temperature != null) payload.temperature = _p2Defaults.temperature;
-    if (_p2Defaults.top_p != null) payload.top_p = _p2Defaults.top_p;
-    const body = JSON.stringify(payload);
+async function callTTS(text) {
+  const payload = { text, model: TTS_MODEL, normalize: false };
+  if (TTS_REFERENCE_ID) payload.reference_id = TTS_REFERENCE_ID;
+  if (_p2Defaults.temperature != null) payload.temperature = _p2Defaults.temperature;
+  if (_p2Defaults.top_p != null) payload.top_p = _p2Defaults.top_p;
 
-    const req = https.request(
-      {
-        hostname: url.hostname,
-        port: 443,
-        path: url.pathname,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${TTS_API_KEY}`,
-          "Content-Length": Buffer.byteLength(body),
-        },
-        timeout: 120000,
+  // 用 fetch 而非 https.request,这样 undici 的 ProxyAgent 才能生效
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 120000);
+  try {
+    const res = await fetch(TTS_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${TTS_API_KEY}`,
       },
-      (res) => {
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`TTS API ${res.statusCode}: ${Buffer.concat(chunks).toString().slice(0, 200)}`));
-          } else {
-            resolve(Buffer.concat(chunks));
-          }
-        });
-      }
-    );
-
-    req.on("error", reject);
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("TTS API timeout"));
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
     });
-    req.write(body);
-    req.end();
-  });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`TTS API ${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function applySpeed(inputPath, outputPath, tempo) {

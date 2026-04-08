@@ -105,6 +105,19 @@ export interface Episode {
   createdAt: string;
   updatedAt: string;
   metadata: Record<string, unknown>;
+
+  // —— 脚本源信息(P1 没跑前,展示原始 script 用)——
+  scriptTitle?: string;
+  scriptDescription?: string;
+  scriptSegments?: ScriptSegment[];
+}
+
+/** script.json 里的 segment(P1 切分前的源数据) */
+export interface ScriptSegment {
+  id: string | number;
+  type?: string;
+  topic?: string;
+  text: string;
 }
 
 /** 列表项,无 chunks(给 sidebar 用) */
