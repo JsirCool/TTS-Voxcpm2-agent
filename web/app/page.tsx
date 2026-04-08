@@ -1,65 +1,196 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useMemo } from "react";
+import type { ChunkEdit, EditBatch } from "@/lib/types";
+import {
+  useEpisodes,
+  useEpisode,
+  runEpisode,
+  applyEdits as apiApplyEdits,
+  exportEpisode,
+  createEpisode,
+} from "@/lib/hooks";
+import { EpisodeSidebar } from "@/components/EpisodeSidebar";
+import { EpisodeHeader } from "@/components/EpisodeHeader";
+import { EditBanner } from "@/components/EditBanner";
+import { ChunksTable } from "@/components/ChunksTable";
+import { LogViewer } from "@/components/LogViewer";
+import { NewEpisodeDialog } from "@/components/NewEpisodeDialog";
+
+export default function Page() {
+  const [selectedId, setSelectedId] = useState<string | null>("ch04");
+  const [edits, setEdits] = useState<EditBatch>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [playingChunkId, setPlayingChunkId] = useState<string | null>(null);
+  const [newEpOpen, setNewEpOpen] = useState(false);
+
+  const { data: epList, mutate: mutateList } = useEpisodes();
+  const { data: epDetail, mutate: mutateDetail } = useEpisode(selectedId);
+
+  const dirtyCount = useMemo(() => {
+    let tts = 0;
+    let sub = 0;
+    for (const e of Object.values(edits)) {
+      if (e.textNormalized !== undefined) tts++;
+      if (e.subtitleText !== undefined) sub++;
+    }
+    return { tts, sub };
+  }, [edits]);
+
+  const handleSelect = (id: string) => {
+    setSelectedId(id);
+    setEdits({});
+    setEditing(null);
+    setPlayingChunkId(null);
+  };
+
+  const handleRun = async () => {
+    if (!selectedId) return;
+    try {
+      await runEpisode(selectedId);
+      await mutateDetail();
+      await mutateList();
+    } catch (e) {
+      alert(`Run failed: ${(e as Error).message}`);
+    }
+  };
+
+  const handleExport = async () => {
+    if (!selectedId) return;
+    const dir =
+      typeof window !== "undefined"
+        ? window.prompt(
+            "导出到目录:",
+            "/Users/xuelin/projects/remotion/public/tts",
+          )
+        : null;
+    if (!dir) return;
+    try {
+      await exportEpisode(selectedId, dir);
+      alert(`已导出到 ${dir}`);
+    } catch (e) {
+      alert(`Export failed: ${(e as Error).message}`);
+    }
+  };
+
+  const handleApply = async () => {
+    if (!selectedId) return;
+    if (Object.keys(edits).length === 0) return;
+    try {
+      await apiApplyEdits(selectedId, edits);
+      setEdits({});
+      setPlayingChunkId(null);
+      await mutateDetail();
+    } catch (e) {
+      alert(`Apply failed: ${(e as Error).message}`);
+    }
+  };
+
+  const handleStage = (cid: string, draft: ChunkEdit) => {
+    setEdits((prev) => {
+      const next = { ...prev };
+      if (Object.keys(draft).length === 0) {
+        delete next[cid];
+      } else {
+        next[cid] = draft;
+      }
+      return next;
+    });
+    setEditing(null);
+    // 如果正在播这个 chunk 就停掉
+    if (playingChunkId === cid) setPlayingChunkId(null);
+  };
+
+  const handleCreateEp = async (id: string, file: File) => {
+    try {
+      await createEpisode(id, file);
+      await mutateList();
+      setSelectedId(id);
+    } catch (e) {
+      alert(`Create failed: ${(e as Error).message}`);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="h-screen flex flex-col bg-neutral-50 text-neutral-900 overflow-hidden">
+      <header className="h-12 border-b border-neutral-200 bg-white flex items-center px-4 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded bg-neutral-900 flex items-center justify-center text-white text-xs font-bold">
+            T
+          </div>
+          <h1 className="font-semibold text-sm">TTS Harness</h1>
+          <span className="text-xs text-neutral-400 ml-1">v0.1</span>
+        </div>
+        <div className="ml-auto text-xs text-neutral-500 font-mono">
+          localhost:3000
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden">
+        <EpisodeSidebar
+          episodes={epList?.episodes ?? []}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+          onNewEpisode={() => setNewEpOpen(true)}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+        <main className="flex-1 flex flex-col overflow-hidden">
+          {epDetail?.episode ? (
+            <>
+              <EpisodeHeader
+                episode={epDetail.episode}
+                running={epDetail.running}
+                currentStage={epDetail.currentStage}
+                onRun={handleRun}
+                onExport={handleExport}
+              />
+              <EditBanner
+                ttsCount={dirtyCount.tts}
+                subCount={dirtyCount.sub}
+                onApply={handleApply}
+                onDiscard={() => setEdits({})}
+              />
+              <div className="flex-1 overflow-y-auto bg-white">
+                <div className="px-6 py-2 sticky top-0 bg-white border-b border-neutral-100 flex items-center z-10">
+                  <h3 className="text-xs font-medium text-neutral-500 uppercase tracking-wide">
+                    Chunks
+                  </h3>
+                  <span className="ml-2 text-[11px] text-neutral-400">
+                    {epDetail.episode.chunks.length} 项
+                  </span>
+                  <span className="ml-auto text-[11px] text-neutral-400">
+                    点击 ✎ → 展开编辑
+                  </span>
+                </div>
+                <ChunksTable
+                  chunks={epDetail.episode.chunks}
+                  edits={edits}
+                  editing={editing}
+                  playingChunkId={playingChunkId}
+                  onPlay={(cid) =>
+                    setPlayingChunkId((prev) => (prev === cid ? null : cid))
+                  }
+                  onEdit={(cid) =>
+                    setEditing((prev) => (prev === cid ? null : cid))
+                  }
+                  onCancelEdit={() => setEditing(null)}
+                  onStage={handleStage}
+                />
+              </div>
+              <LogViewer log={epDetail.logTail} />
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">
+              请从左侧选择一个 episode
+            </div>
+          )}
+        </main>
+      </div>
+
+      <NewEpisodeDialog
+        open={newEpOpen}
+        onClose={() => setNewEpOpen(false)}
+        onCreate={handleCreateEp}
+      />
     </div>
   );
 }
