@@ -41,6 +41,20 @@ EventKind = Literal[
 ]
 
 
+class DomainError(Exception):
+    """Raised by core logic / Prefect tasks on expected business failures.
+
+    The ``code`` is a short machine-readable token (``not_found``,
+    ``invalid_state``, ``invalid_input`` ...). Callers can branch on it
+    without pattern-matching exception messages.
+    """
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(message or code)
+        self.code = code
+        self.message = message or code
+
+
 class _ORM(BaseModel):
     """Base class for ORM-backed read models."""
 
@@ -189,6 +203,26 @@ class P2Result(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class FishTTSParams(BaseModel):
+    """Full parameter surface for a Fish Audio TTS S2-Pro call.
+
+    Defaults are safe production values. Overrides flow in from
+    environment variables at task-boundary level (not here): keeping this
+    schema free of env coupling makes it trivial to serialize into the
+    ``takes.params`` JSON column for audit.
+    """
+
+    reference_id: str | None = None
+    model: str = "s2-pro"
+    format: Literal["wav", "mp3", "pcm"] = "wav"
+    mp3_bitrate: int = 192
+    normalize: bool = False
+    latency: Literal["normal", "balanced"] = "normal"
+    temperature: float = 0.7
+    top_p: float = 0.7
+    chunk_length: int = 200
+
+
 class P3Result(BaseModel):
     chunk_id: str
     transcript_uri: str
@@ -198,13 +232,52 @@ class P3Result(BaseModel):
 class P5Result(BaseModel):
     chunk_id: str
     subtitle_uri: str
+    line_count: int = 0
+
+
+class WhisperXWord(BaseModel):
+    """Single word-level timestamp emitted by the WhisperX service.
+
+    ``score`` is optional because forced-aligned words without a confidence
+    still carry useful start/end timestamps, and downstream ranking code is
+    allowed to ignore it.
+    """
+
+    word: str
+    start: float
+    end: float
+    score: float | None = None
+
+
+class WhisperXTranscript(BaseModel):
+    """Shape of ``transcript.json`` produced by the WhisperX HTTP service.
+
+    Only the fields consumed by P5 are modelled; anything else is permitted
+    and silently ignored so the wire schema can evolve without breaking P5.
+    """
+
+    transcript: list[WhisperXWord] = Field(default_factory=list)
+    language: str | None = None
+    duration_s: float | None = None
+    model: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class P6Result(BaseModel):
+    """Episode-level concat result emitted by the P6 task.
+
+    Field names match the A7-P6 agent contract (``wav_uri`` / ``srt_uri`` /
+    ``total_duration_s`` / ``chunk_count``) — P6 is the terminal per-episode
+    stage and these names read more naturally at the API boundary than the
+    generic ``final_*_uri`` shape used by earlier drafts.
+    """
+
     episode_id: str
-    final_audio_uri: str
-    final_subtitle_uri: str
-    duration_s: float
+    wav_uri: str
+    srt_uri: str
+    total_duration_s: float
+    chunk_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +307,8 @@ __all__ = [
     "StageName",
     "StageStatus",
     "EventKind",
+    # errors
+    "DomainError",
     # write
     "EpisodeCreate",
     "ChunkInput",
@@ -248,8 +323,11 @@ __all__ = [
     # stages
     "P1Result",
     "P2Result",
+    "FishTTSParams",
     "P3Result",
     "P5Result",
+    "WhisperXWord",
+    "WhisperXTranscript",
     "P6Result",
     # events
     "StageEvent",
