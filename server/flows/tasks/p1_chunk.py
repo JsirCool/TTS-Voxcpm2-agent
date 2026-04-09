@@ -1,0 +1,173 @@
+"""P1 — script segmentation Prefect task.
+
+Reads an episode's ``script.json`` from object storage, splits every segment
+into sentences via :func:`server.core.p1_logic.script_to_chunks`, persists
+the resulting rows through :class:`ChunkRepo`, writes framing events, and
+transitions the episode into the ``ready`` state.
+
+Design notes
+------------
+* The task is purely an I/O adapter over ``p1_logic``. All segmentation
+  rules live in the pure logic module so they are unit-testable without a
+  database, MinIO, or Prefect runtime.
+* The task is **re-runnable**: if the ``chunks`` table already has rows for
+  the episode, they are deleted inside the same transaction before the new
+  bulk insert. This is what the prompt calls the "recommended" replay
+  strategy. Combined with deterministic ``boundary_hash``, a clean P1
+  re-run produces byte-identical output.
+* ``stage_started`` is written *before* the logic runs, ``stage_finished``
+  *after*. A mid-task failure leaves the ``stage_started`` event in place
+  (as part of a rolled-back transaction, if we get that far — see below)
+  and lets the Prefect task state machine decide whether to retry.
+* Transaction boundary: everything except the MinIO read happens inside a
+  single ``AsyncSession`` transaction, so partial writes are impossible.
+  The MinIO read is best-effort; if the object is missing we raise
+  :class:`DomainError` before touching the DB.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+from prefect import task
+from prefect.exceptions import MissingContextError
+from prefect.logging.loggers import get_run_logger
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from server.core.domain import P1Result
+from server.core.events import write_event
+from server.core.models import Chunk
+from server.core.p1_logic import script_to_chunks
+from server.core.repositories import ChunkRepo, EpisodeRepo
+from server.core.storage import MinIOStorage, episode_script_key
+
+
+class DomainError(Exception):
+    """Raised for P1-level contract violations that should abort the run.
+
+    The ``code`` attribute is machine-readable and is safe to expose in the
+    Prefect failure message / events payload. Allowed codes:
+
+    * ``"not_found"`` — episode row or script object missing.
+    * ``"invalid_input"`` — script.json is not valid JSON / wrong shape.
+    * ``"invalid_state"`` — e.g. the episode is not in a state from which
+      P1 can legally run (currently unused; reserved for the W3 integrator).
+    """
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        self.code = code
+        super().__init__(message or code)
+
+
+@dataclass(frozen=True)
+class P1Context:
+    """Everything the task needs that is not episode-specific.
+
+    Keeping these out of the function signature means Prefect runs don't
+    need to serialise live DB / MinIO clients. In production W3 this will
+    be wired up by the flow entry point; in unit tests we construct one
+    directly with in-memory adapters.
+    """
+
+    session_maker: async_sessionmaker[AsyncSession]
+    storage: MinIOStorage
+
+
+async def _load_script(storage: MinIOStorage, episode_id: str) -> dict[str, Any]:
+    key = episode_script_key(episode_id)
+    try:
+        raw = await storage.download_bytes(key)
+    except Exception as exc:  # noqa: BLE001 — we re-raise as DomainError
+        raise DomainError("not_found", f"script not found: {key}") from exc
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DomainError("invalid_input", f"script is not valid JSON: {exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise DomainError(
+            "invalid_input",
+            f"script root must be an object, got {type(parsed).__name__}",
+        )
+    return parsed
+
+
+async def _run_p1(ctx: P1Context, episode_id: str) -> P1Result:
+    script = await _load_script(ctx.storage, episode_id)
+
+    try:
+        chunks = script_to_chunks(script, episode_id)
+    except ValueError as exc:
+        raise DomainError("invalid_input", str(exc)) from exc
+
+    async with ctx.session_maker() as session:
+        async with session.begin():
+            ep_repo = EpisodeRepo(session)
+            chunk_repo = ChunkRepo(session)
+
+            episode = await ep_repo.get(episode_id)
+            if episode is None:
+                raise DomainError("not_found", f"episode not found: {episode_id}")
+
+            # stage_started — before any mutating work, so consumers see the
+            # pipeline move even if we end up raising later in the tx.
+            await write_event(
+                session,
+                episode_id=episode_id,
+                chunk_id=None,
+                kind="stage_started",
+                payload={"stage": "p1"},
+            )
+
+            # Clean slate: a re-run drops stale rows before inserting the
+            # newly-computed ones. We do this via a direct delete() so it is
+            # a single SQL statement inside the current transaction.
+            await session.execute(delete(Chunk).where(Chunk.episode_id == episode_id))
+
+            inserted = await chunk_repo.bulk_insert(chunks)
+
+            await ep_repo.set_status(episode_id, "ready")
+
+            await write_event(
+                session,
+                episode_id=episode_id,
+                chunk_id=None,
+                kind="stage_finished",
+                payload={"stage": "p1", "chunk_count": inserted},
+            )
+
+    return P1Result(episode_id=episode_id, chunks=chunks)
+
+
+@task(name="p1-chunk")
+async def p1_chunk(episode_id: str, *, ctx: P1Context) -> P1Result:
+    """Prefect task: run P1 segmentation for ``episode_id``.
+
+    The task takes its runtime dependencies via an explicit ``ctx`` keyword
+    rather than a module-level singleton so that unit tests and the W3 flow
+    entry point can pass in their own sessions / storage without monkey
+    patching. Prefect does not serialize the ctx — it's used only inside
+    the task body.
+    """
+    try:
+        logger = get_run_logger()
+    except MissingContextError:
+        # Called outside a Prefect flow/task runtime (e.g. direct unit test
+        # invocation via ``p1_chunk.fn``). Fall back to stdlib logging so
+        # the adapter stays fully usable in tests.
+        logger = logging.getLogger("server.flows.tasks.p1_chunk")
+    logger.info("P1 starting", extra={"episode_id": episode_id})
+    result = await _run_p1(ctx, episode_id)
+    logger.info(
+        "P1 finished",
+        extra={"episode_id": episode_id, "chunk_count": len(result.chunks)},
+    )
+    return result
+
+
+__all__ = ["p1_chunk", "P1Context", "DomainError"]
