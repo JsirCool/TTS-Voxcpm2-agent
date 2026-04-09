@@ -457,17 +457,61 @@ GET    /healthz
 
 ## 5. 协调协议
 
-### 5.1 工作树隔离
+### 5.1 工作树隔离 — **显式预创建协议** (修订自 W3 事故)
 
-每个 agent 用独立 git worktree:
+#### 强制规则
+
+每个 agent 用独立 git worktree。**主会话必须在 spawn 之前显式预创建 worktree**,然后在 prompt 里告诉 agent `cd <绝对路径>` 工作。**严禁依赖 `Agent` 工具的 `isolation: "worktree"` 参数自动创建** —— 该参数在并发 spawn 多个 agent 时存在 race condition (W3 事故根因,4 个并发 task agent 中有 4 个 worktree 创建失败,代码全部落到主 checkout)。
+
+#### 主会话职责
 
 ```bash
-git worktree add ../tts-harness-A1 -b agent/A1-infra
-git worktree add ../tts-harness-A2 -b agent/A2-domain
-# ...
+# Wave spawn 前 (主会话执行)
+WAVE_BASE=$(git rev-parse HEAD)
+for agent in A4 A5 A6 A7; do
+  git worktree add -b "agent/${agent}-${TASK}" \
+    "/Users/xuelin/projects/tts-agent-harness/.claude/worktrees/${agent}" \
+    "${WAVE_BASE}"
+done
+git worktree list  # 验证全部创建成功
 ```
 
-Spawn agent 时用 `Agent` 工具的 `isolation: "worktree"` 参数。Agent 完成后,人工 review 分支 → 合并到 wave 集成分支 → wave 完成后合并到 main。
+**预创建必须串行** (避免抢 git 锁),`git worktree add` 本身很快 (<100ms each)。
+
+#### Spawn 时 (主会话)
+
+- **不要**用 `isolation: "worktree"` 参数
+- 在 prompt 顶部强制写:
+  ```
+  【工作目录】
+  你必须 cd 到 /Users/xuelin/projects/tts-agent-harness/.claude/worktrees/A4
+  所有 git 命令、文件读写都在该路径下进行。
+  禁止 cd 到其他目录。完成后 git add+commit 到当前分支 (agent/A4-...)。
+  ```
+- 多个 agent 可以 `run_in_background: true` 并行执行 — race 已被预创建消除
+
+#### Agent 职责
+
+- 第一件事: `cd <指定路径> && pwd && git branch --show-current` 验证落地正确
+- 如果 pwd 不是指定路径或分支错 → 立即中止任务,在 worklog 写明并报告主会话
+- 完成后 `git add ... && git commit` 到当前分支 (不 push 不 merge)
+
+#### Wave gate 时 (主会话)
+
+- 切到集成分支
+- `git merge --no-ff agent/A4-... agent/A5-... ...` 逐个合并
+- 处理冲突,跑测试
+- Tag 后 `git worktree remove .claude/worktrees/A4 ...` 清理
+
+#### 验证清单 (每次 spawn 后立即跑)
+
+```bash
+git worktree list                    # 看每个 worktree 的实际 path + branch
+ls .claude/worktrees/                # 物理存在
+git branch | grep agent/             # 分支存在
+```
+
+任意一项缺失 → spawn 失败,回收 + 重试。
 
 ### 5.2 契约修改广播
 
