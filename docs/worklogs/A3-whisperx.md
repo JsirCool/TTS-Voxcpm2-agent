@@ -95,3 +95,29 @@ whisperx 依赖链很重（torch、pyannote.audio、faster-whisper、ctranslate2
 ### docker build + 容器 smoke
 
 见报告正文（结果会在 build 完成后由主会话追加到提交记录）。
+
+## A3-retry validation (post-W1-W2 gate, ended early)
+
+**Verdict**: PARTIAL — stage1 validated, stage2 deferred.
+
+### What was validated
+- PATH fix: `/Applications/Docker.app/Contents/Resources/bin` solves credential helper issue
+- Stage1 (multi-stage builder) builds successfully (~21 min wall time)
+- Final stage1 image: whisperx-svc:builder 3.36GB
+- All deps install: torch 2.8.0, whisperx 3.8.5, pyannote-audio 4.0.4, ctranslate2 4.7.1, faster-whisper 1.2.1, fastapi/uvicorn etc.
+
+### Known issues discovered (handed off to A12-Prod)
+1. **torch version conflict**: Original Dockerfile pinned torch 2.3.1 (CPU wheel) but whisperx 3.8.5 requires torch ~=2.8 → force-upgrades to torch 2.8.0 (~800MB+ wheel). Net effect: stage1 bigger than originally planned.
+2. **ffmpeg apt package bloat**: Debian trixie's `ffmpeg` package recommends mesa/libllvm/libdrm/libgl1 graphics stack — completely unnecessary for headless TTS service. Should switch to `--no-install-recommends ffmpeg` or use a static ffmpeg binary (johnvansickle.com static builds, ~80MB) to bypass apt entirely.
+3. **apt 500 EOF errors**: Hit on libssh-4 / libblas3 / libgomp1 during apt-get update (network/mirror reliability). Not blocking with retries but adds to build time.
+
+### Deferred to A12-Prod
+- Final image (whisperx-svc:dev) build with optimized Dockerfile
+- Container cold-start measurement
+- /healthz, /readyz, /transcribe smoke test against running container
+- Image size optimization (target <2GB instead of current trajectory >5GB)
+
+### Confidence
+- **High** that the FastAPI server.py + lifespan model loading code is correct (covered by 6/6 unit tests)
+- **Medium** that the Dockerfile structure is correct (stage1 proven, stage2 needs slimming)
+- **No** end-to-end runtime validation against a live whisperx model
