@@ -128,6 +128,7 @@ serve-api:
 			MINIO_ACCESS_KEY=minioadmin \
 			MINIO_SECRET_KEY=minioadmin \
 			MINIO_BUCKET=tts-harness \
+			PREFECT_API_URL="http://localhost:$(PREFECT_PORT)/api" \
 			nohup .venv-server/bin/uvicorn server.api.main:app \
 				--host 0.0.0.0 --port $(API_PORT) --log-level info \
 				> /tmp/tts-harness-api.log 2>&1 & \
