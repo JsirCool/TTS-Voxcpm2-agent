@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Chunk, ChunkEdit, EditBatch } from "@/lib/types";
+import type { Chunk, ChunkEdit, EditBatch, StageName } from "@/lib/types";
 import { ChunkRow, type DirtyType, type DisplayMode } from "./ChunkRow";
 import { ChunkEditor } from "./ChunkEditor";
 
@@ -15,6 +15,7 @@ interface Props {
   onEdit: (cid: string) => void;
   onCancelEdit: () => void;
   onStage: (cid: string, draft: ChunkEdit) => void;
+  onStageClick?: (cid: string, stage: StageName) => void;
 }
 
 function computeDirty(edit: ChunkEdit | undefined): DirtyType {
@@ -37,6 +38,7 @@ export function ChunksTable({
   onEdit,
   onCancelEdit,
   onStage,
+  onStageClick,
 }: Props) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("subtitle");
 
@@ -107,6 +109,7 @@ export function ChunksTable({
               onEdit={() => onEdit(c.id)}
               onCancelEdit={onCancelEdit}
               onStage={(draft) => onStage(c.id, draft)}
+              onStageClick={onStageClick ? (stage) => onStageClick(c.id, stage) : undefined}
             />
           );
         })}
@@ -127,6 +130,7 @@ interface RowGroupProps {
   onEdit: () => void;
   onCancelEdit: () => void;
   onStage: (draft: ChunkEdit) => void;
+  onStageClick?: (stage: StageName) => void;
 }
 
 function RowGroup({
@@ -141,6 +145,7 @@ function RowGroup({
   onEdit,
   onCancelEdit,
   onStage,
+  onStageClick,
 }: RowGroupProps) {
   return (
     <>
@@ -155,6 +160,7 @@ function RowGroup({
         onPlay={onPlay}
         onEdit={onEdit}
         onCancelEdit={onCancelEdit}
+        onStageClick={onStageClick}
       />
       {isEditing ? (
         <ChunkEditor

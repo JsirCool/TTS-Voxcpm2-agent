@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Chunk, ChunkEdit, ChunkStatus } from "@/lib/types";
+import type { Chunk, ChunkEdit, ChunkStatus, StageName } from "@/lib/types";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
 import { getAudioUrl } from "@/lib/hooks";
 import { KaraokeSubtitle } from "./KaraokeSubtitle";
+import { StagePipeline } from "./StagePipeline";
 import { TakeSelector } from "./TakeSelector";
 
 export type DirtyType = null | "tts" | "subtitle" | "both";
@@ -21,6 +22,7 @@ interface Props {
   onPlay: () => void;
   onEdit: () => void;
   onCancelEdit: () => void;
+  onStageClick?: (stage: StageName) => void;
 }
 
 function statusIcon(status: ChunkStatus) {
@@ -48,6 +50,7 @@ export function ChunkRow({
   onPlay,
   onEdit,
   onCancelEdit,
+  onStageClick,
 }: Props) {
   void episodeId; // kept for future use
   const isDirty = dirty !== null;
@@ -174,6 +177,15 @@ export function ChunkRow({
             </span>
           ) : null}
         </div>
+        {chunk.stageRuns.length > 0 && (
+          <div className="mt-1">
+            <StagePipeline
+              stageRuns={chunk.stageRuns}
+              onStageClick={onStageClick}
+              compact
+            />
+          </div>
+        )}
         {chunk.takes.length > 1 ? (
           <TakeSelector
             takes={chunk.takes}

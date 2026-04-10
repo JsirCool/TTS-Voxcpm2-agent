@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import type { ChunkEdit, EditBatch } from "@/lib/types";
 import type { StageName } from "@/lib/types";
 import {
@@ -11,6 +11,9 @@ import {
   retryChunk,
   applyEdits as apiApplyEdits,
   createEpisode,
+  deleteEpisode,
+  duplicateEpisode,
+  archiveEpisode,
 } from "@/lib/hooks";
 import { EpisodeSidebar } from "@/components/EpisodeSidebar";
 import { EpisodeHeader } from "@/components/EpisodeHeader";
@@ -20,6 +23,9 @@ import { LogViewer } from "@/components/LogViewer";
 import { NewEpisodeDialog } from "@/components/NewEpisodeDialog";
 import { StageProgress } from "@/components/StageProgress";
 import { EpisodeStageBar } from "@/components/EpisodeStageBar";
+import { HelpDialog } from "@/components/HelpDialog";
+import { ScriptPreview } from "@/components/ScriptPreview";
+import { StageLogDrawer } from "@/components/StageLogDrawer";
 import { TtsConfigBar } from "@/components/TtsConfigBar";
 
 export default function Page() {
@@ -28,6 +34,8 @@ export default function Page() {
   const [editing, setEditing] = useState<string | null>(null);
   const [playingChunkId, setPlayingChunkId] = useState<string | null>(null);
   const [newEpOpen, setNewEpOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState<{ cid: string; stage: StageName } | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const { data: episodes, mutate: mutateList } = useEpisodes();
   const { data: episode, mutate: mutateDetail } = useEpisode(selectedId);
@@ -98,6 +106,58 @@ export default function Page() {
     }
   };
 
+  const handleDeleteEp = async (id: string) => {
+    if (!confirm(`确认删除 ${id}？此操作不可撤销。`)) return;
+    try {
+      await deleteEpisode(id);
+      if (selectedId === id) setSelectedId(null);
+      await mutateList();
+    } catch (e) { alert(`Delete failed: ${(e as Error).message}`); }
+  };
+
+  const handleDuplicateEp = async (id: string) => {
+    const newId = prompt(`复制 ${id} 到新 ID:`, `${id}-copy`);
+    if (!newId?.trim()) return;
+    try {
+      await duplicateEpisode(id, newId.trim());
+      await mutateList();
+      setSelectedId(newId.trim());
+    } catch (e) { alert(`Duplicate failed: ${(e as Error).message}`); }
+  };
+
+  const handleArchiveEp = async (id: string) => {
+    if (!confirm(`归档 ${id}？会从列表中隐藏。`)) return;
+    try {
+      await archiveEpisode(id);
+      if (selectedId === id) setSelectedId(null);
+      await mutateList();
+    } catch (e) { alert(`Archive failed: ${(e as Error).message}`); }
+  };
+
+  // Keyboard shortcuts
+  const handlePlay = useCallback((cid: string) => {
+    setPlayingChunkId((prev) => (prev === cid ? null : cid));
+  }, []);
+
+  useEffect(() => {
+    if (!episode?.chunks.length) return;
+    const chunks = episode.chunks;
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const curIdx = playingChunkId ? chunks.findIndex((c) => c.id === playingChunkId) : 0;
+      const safe = curIdx < 0 ? 0 : curIdx;
+      if (e.key === " " || e.code === "Space") { e.preventDefault(); const c = chunks[safe]; if (c) handlePlay(c.id); }
+      else if (e.key === "j") { e.preventDefault(); const next = Math.min(chunks.length - 1, safe + 1); if (playingChunkId) setPlayingChunkId(chunks[next]?.id ?? null); }
+      else if (e.key === "k") { e.preventDefault(); const prev = Math.max(0, safe - 1); if (playingChunkId) setPlayingChunkId(chunks[prev]?.id ?? null); }
+      else if (e.key === "e") { e.preventDefault(); const c = chunks[safe]; if (c) setEditing((p) => (p === c.id ? null : c.id)); }
+      else if (e.key === "Escape") { if (editing) setEditing(null); else if (drawerOpen) setDrawerOpen(null); else if (playingChunkId) setPlayingChunkId(null); }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [episode?.chunks, playingChunkId, editing, drawerOpen, handlePlay]);
+
   const running = episode?.status === "running";
   const failedCount = episode?.chunks.filter((c) => c.status === "failed").length ?? 0;
 
@@ -111,8 +171,10 @@ export default function Page() {
           <h1 className="font-semibold text-sm">TTS Harness</h1>
           <span className="text-xs text-neutral-400 ml-1">v2</span>
         </div>
-        <div className="ml-auto text-xs text-neutral-500 font-mono">
-          localhost:3010
+        <div className="ml-auto flex items-center gap-3">
+          <span className="text-xs text-neutral-500 font-mono">localhost:3010</span>
+          <button type="button" onClick={() => setHelpOpen(true)} title="Help"
+            className="w-6 h-6 rounded-full border border-neutral-300 text-neutral-500 hover:bg-neutral-100 text-xs font-semibold">?</button>
         </div>
       </header>
 
@@ -122,6 +184,9 @@ export default function Page() {
           selectedId={selectedId}
           onSelect={handleSelect}
           onNewEpisode={() => setNewEpOpen(true)}
+          onDelete={handleDeleteEp}
+          onDuplicate={handleDuplicateEp}
+          onArchive={handleArchiveEp}
         />
         <main className="flex-1 flex flex-col overflow-hidden">
           {episode ? (
@@ -198,6 +263,7 @@ export default function Page() {
                       }
                       onCancelEdit={() => setEditing(null)}
                       onStage={handleStage}
+                      onStageClick={(cid, stage) => setDrawerOpen({ cid, stage })}
                     />
                   </>
                 )}
@@ -217,6 +283,26 @@ export default function Page() {
         onClose={() => setNewEpOpen(false)}
         onCreate={handleCreateEp}
       />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+
+      {drawerOpen && selectedId && episode && (() => {
+        const chunk = episode.chunks.find((c) => c.id === drawerOpen.cid);
+        const stageRun = chunk?.stageRuns.find((sr) => sr.stage === drawerOpen.stage);
+        return (
+          <StageLogDrawer
+            open
+            onClose={() => setDrawerOpen(null)}
+            episodeId={selectedId}
+            chunkId={drawerOpen.cid}
+            stage={drawerOpen.stage}
+            stageRun={stageRun}
+            onAfterRetry={() => {
+              mutateDetail();
+              setDrawerOpen(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
