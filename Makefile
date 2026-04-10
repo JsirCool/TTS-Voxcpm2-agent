@@ -1,82 +1,92 @@
 #
 # TTS Agent Harness — Makefile
 #
-# Usage:
-#   make dev       — start docker infra (postgres + minio + prefect)
-#   make serve     — start FastAPI + Next.js dev servers
-#   make stop      — stop app servers
-#   make down      — stop everything (docker + app)
+# 所有配置从根 .env 读取，不在此文件 hardcode。
+# 切环境: cp .env.dev .env / cp .env.prod .env
 #
 
 SHELL := /bin/bash
 
-# ---------------------------------------------------------------------------
-# Port mapping (host ports — must match docker-compose)
-# ---------------------------------------------------------------------------
+# Load .env into make's env
+-include .env
+export
 
-PG_PORT    ?= 55432
-MINIO_PORT ?= 59000
-MINIO_CON  ?= 59001
-PREFECT_PORT ?= 54200
-API_PORT   ?= 8100
-WEB_PORT   ?= 3010
+# Defaults (fallback if .env missing)
+API_PORT      ?= 8100
+WEB_PORT      ?= 3010
+POSTGRES_PORT ?= 55432
+MINIO_API_PORT ?= 59000
+MINIO_CONSOLE_PORT ?= 59001
+PREFECT_PORT  ?= 54200
+LOG_LEVEL     ?= info
+WHISPERX_MODE ?= local
 
-# ---------------------------------------------------------------------------
-# Derived URLs
-# ---------------------------------------------------------------------------
-
-DATABASE_URL := postgresql+asyncpg://harness:harness@localhost:$(PG_PORT)/harness
-MINIO_ENDPOINT := localhost:$(MINIO_PORT)
-
-# ---------------------------------------------------------------------------
 # Docker compose
+COMPOSE := docker compose --env-file .env -f docker/docker-compose.dev.yml -p tts-harness
+
+# PID files
+API_PID      := /tmp/tts-harness-api.pid
+WEB_PID      := /tmp/tts-harness-web.pid
+WHISPERX_PID := /tmp/tts-harness-whisperx.pid
+
+.PHONY: help env-dev env-prod env-test dev down status logs migrate psql \
+        serve serve-api serve-web serve-whisperx stop open \
+        test test-e2e test-e2e-browser test-live test-all tsc gen-types
+
 # ---------------------------------------------------------------------------
-
-COMPOSE_FILE := docker/docker-compose.dev.yml
-COMPOSE := docker compose -f $(COMPOSE_FILE) -p tts-harness
-
-.PHONY: help dev down status logs migrate psql serve stop serve-api serve-web open
+# Help
+# ---------------------------------------------------------------------------
 
 help:
 	@echo "TTS Agent Harness"
 	@echo ""
+	@echo "  Environment:                             Ports:"
+	@echo "    make env-dev     switch to dev            PG=$(POSTGRES_PORT) MinIO=$(MINIO_API_PORT)"
+	@echo "    make env-prod    switch to prod           Prefect=$(PREFECT_PORT)"
+	@echo "    make env-test    switch to test            API=$(API_PORT) Web=$(WEB_PORT)"
+	@echo ""
 	@echo "  Infrastructure:"
-	@echo "    make dev            start postgres + minio + prefect-server"
-	@echo "    make down           stop docker stack"
-	@echo "    make status         show container status"
-	@echo "    make logs           tail docker logs"
-	@echo "    make migrate        run alembic migrations"
-	@echo "    make psql           open psql shell"
+	@echo "    make dev         start docker stack"
+	@echo "    make down        stop docker stack"
+	@echo "    make status      container status"
+	@echo "    make logs        tail docker logs"
+	@echo "    make migrate     alembic upgrade head"
 	@echo ""
 	@echo "  Application:"
-	@echo "    make serve          start FastAPI (:$(API_PORT)) + Next.js (:$(WEB_PORT))"
-	@echo "    make serve-api      start FastAPI only"
-	@echo "    make serve-web      start Next.js only"
-	@echo "    make stop           stop app servers"
-	@echo "    make open           open browser to localhost:$(WEB_PORT)"
+	@echo "    make serve       start all (api + web + whisperx)"
+	@echo "    make stop        stop all app servers"
+	@echo "    make open        open browser"
 	@echo ""
 	@echo "  Testing:"
-	@echo "    make test           run server unit + integration tests"
-	@echo "    make test-e2e       run e2e tests (requires dev stack running)"
-	@echo "    make test-live      run live HTTP e2e tests"
-	@echo "    make test-all       run everything"
-	@echo "    make tsc            TypeScript type check"
-	@echo "    make gen-types      regenerate OpenAPI → TS types"
-	@echo ""
-	@echo "  Ports: PG=$(PG_PORT) MinIO=$(MINIO_PORT) Prefect=$(PREFECT_PORT) API=$(API_PORT) Web=$(WEB_PORT)"
+	@echo "    make test            server unit + integration"
+	@echo "    make test-e2e        e2e (ASGI transport)"
+	@echo "    make test-e2e-browser  Playwright browser e2e"
+	@echo "    make test-all        everything"
+	@echo "    make tsc             TypeScript check"
+	@echo "    make gen-types       regenerate OpenAPI → TS"
 
 # ---------------------------------------------------------------------------
-# Docker infra
+# Environment switching
+# ---------------------------------------------------------------------------
+
+env-dev:
+	@cp .env.dev .env && echo "✓ switched to dev"
+
+env-prod:
+	@cp .env.prod .env && echo "✓ switched to prod — edit .env to fill secrets"
+
+env-test:
+	@cp .env.test .env && echo "✓ switched to test"
+
+# ---------------------------------------------------------------------------
+# Docker infrastructure
 # ---------------------------------------------------------------------------
 
 dev:
-	@if [ ! -f docker/.env ]; then cp docker/.env.example docker/.env; echo "created docker/.env"; fi
+	@if [ ! -f .env ]; then cp .env.dev .env; echo "created .env from .env.dev"; fi
 	$(COMPOSE) up -d
 	@echo ""
-	@echo "Infrastructure running:"
-	@echo "  Postgres   localhost:$(PG_PORT)"
-	@echo "  MinIO      localhost:$(MINIO_PORT) (console: $(MINIO_CON))"
-	@echo "  Prefect    localhost:$(PREFECT_PORT)"
+	@echo "Infrastructure: PG=:$(POSTGRES_PORT) MinIO=:$(MINIO_API_PORT) Prefect=:$(PREFECT_PORT)"
 
 down:
 	$(COMPOSE) down
@@ -89,7 +99,7 @@ logs:
 	$(COMPOSE) logs -f
 
 migrate:
-	DATABASE_URL="$(DATABASE_URL)" cd server && alembic upgrade head
+	cd server && alembic upgrade head
 
 psql:
 	$(COMPOSE) exec postgres psql -U harness -d harness
@@ -98,11 +108,7 @@ psql:
 # Application servers
 # ---------------------------------------------------------------------------
 
-# PID files for clean stop
-API_PID := /tmp/tts-harness-api.pid
-WEB_PID := /tmp/tts-harness-web.pid
-
-serve: serve-api serve-web
+serve: serve-api serve-web serve-whisperx
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
 	@echo "║  TTS Harness running                        ║"
@@ -110,6 +116,7 @@ serve: serve-api serve-web
 	@echo "║  Frontend:  http://localhost:$(WEB_PORT)          ║"
 	@echo "║  API:       http://localhost:$(API_PORT)          ║"
 	@echo "║  API docs:  http://localhost:$(API_PORT)/docs     ║"
+	@echo "║  WhisperX:  http://localhost:7860            ║"
 	@echo "║  Prefect:   http://localhost:$(PREFECT_PORT)        ║"
 	@echo "║                                             ║"
 	@echo "║  Logs: tail -f /tmp/tts-harness-*.log       ║"
@@ -117,31 +124,21 @@ serve: serve-api serve-web
 	@echo "╚══════════════════════════════════════════════╝"
 
 serve-api:
-	@# Kill existing if running
 	@if [ -f $(API_PID) ] && kill -0 $$(cat $(API_PID)) 2>/dev/null; then \
 		echo "API already running (pid $$(cat $(API_PID)))"; \
 	else \
 		echo "Starting FastAPI on :$(API_PORT)..."; \
-		set -a && [ -f .env ] && . ./.env; set +a; \
-		env \
-			no_proxy="localhost,127.0.0.1" \
-			NO_PROXY="localhost,127.0.0.1" \
-			DATABASE_URL="$(DATABASE_URL)" \
-			MINIO_ENDPOINT="$(MINIO_ENDPOINT)" \
-			MINIO_ACCESS_KEY=minioadmin \
-			MINIO_SECRET_KEY=minioadmin \
-			MINIO_BUCKET=tts-harness \
-			PREFECT_API_URL="http://localhost:$(PREFECT_PORT)/api" \
-			NODE_USE_ENV_PROXY=1 \
+		set -a && . ./.env 2>/dev/null; set +a; \
+		NO_PROXY="localhost,127.0.0.1" \
 			nohup .venv-server/bin/uvicorn server.api.main:app \
-				--host 0.0.0.0 --port $(API_PORT) --log-level info \
+				--host 0.0.0.0 --port $(API_PORT) --log-level $(LOG_LEVEL) \
 				> /tmp/tts-harness-api.log 2>&1 & \
 		echo $$! > $(API_PID); \
 		sleep 2; \
-		if curl -sf http://localhost:$(API_PORT)/healthz > /dev/null 2>&1; then \
+		if curl -sf --noproxy '*' http://localhost:$(API_PORT)/healthz > /dev/null 2>&1; then \
 			echo "  API ready at http://localhost:$(API_PORT)"; \
 		else \
-			echo "  API failed to start — check /tmp/tts-harness-api.log"; \
+			echo "  API failed — check /tmp/tts-harness-api.log"; \
 		fi \
 	fi
 
@@ -154,28 +151,52 @@ serve-web:
 			nohup pnpm dev > /tmp/tts-harness-web.log 2>&1 & \
 		echo $$! > $(WEB_PID); \
 		sleep 5; \
-		if curl -sf http://localhost:$(WEB_PORT) > /dev/null 2>&1; then \
+		if curl -sf --noproxy '*' http://localhost:$(WEB_PORT) > /dev/null 2>&1; then \
 			echo "  Web ready at http://localhost:$(WEB_PORT)"; \
 		else \
 			echo "  Web starting... check /tmp/tts-harness-web.log"; \
 		fi \
 	fi
 
+serve-whisperx:
+	@if [ -f $(WHISPERX_PID) ] && kill -0 $$(cat $(WHISPERX_PID)) 2>/dev/null; then \
+		echo "WhisperX already running (pid $$(cat $(WHISPERX_PID)))"; \
+	elif [ "$(WHISPERX_MODE)" = "docker" ]; then \
+		echo "Starting WhisperX (Docker)..."; \
+		docker rm -f whisperx-svc 2>/dev/null; \
+		docker run -d --name whisperx-svc \
+			-p 7860:7860 \
+			-v whisperx-models:/models \
+			-e WHISPER_MODEL=large-v3 \
+			-e WHISPER_DEVICE=cpu \
+			whisperx-svc:dev; \
+		echo "  WhisperX container started (model loading ~30-60s)"; \
+	else \
+		echo "Starting WhisperX (local .venv)..."; \
+		MODEL_CACHE_DIR="$$HOME/.cache/whisperx" \
+		HF_HOME="$$HOME/.cache/huggingface" \
+		nohup .venv/bin/uvicorn whisperx-svc.server:app \
+			--host 0.0.0.0 --port 7860 --log-level $(LOG_LEVEL) \
+			> /tmp/tts-harness-whisperx.log 2>&1 & \
+		echo $$! > $(WHISPERX_PID); \
+		echo "  WhisperX starting on :7860 (model loading ~30-60s)"; \
+		echo "  Log: /tmp/tts-harness-whisperx.log"; \
+	fi
+
 stop:
-	@if [ -f $(API_PID) ]; then \
-		kill $$(cat $(API_PID)) 2>/dev/null && echo "API stopped" || echo "API not running"; \
-		rm -f $(API_PID); \
-	fi
-	@if [ -f $(WEB_PID) ]; then \
-		kill $$(cat $(WEB_PID)) 2>/dev/null && echo "Web stopped" || echo "Web not running"; \
-		rm -f $(WEB_PID); \
-	fi
-	@# Clean up any orphaned processes
+	@for name_pid in "API:$(API_PID)" "Web:$(WEB_PID)" "WhisperX:$(WHISPERX_PID)"; do \
+		name=$${name_pid%%:*}; pidfile=$${name_pid#*:}; \
+		if [ -f "$$pidfile" ]; then \
+			kill $$(cat "$$pidfile") 2>/dev/null && echo "$$name stopped" || echo "$$name not running"; \
+			rm -f "$$pidfile"; \
+		fi; \
+	done
+	@docker rm -f whisperx-svc 2>/dev/null && echo "WhisperX container stopped" || true
 	@lsof -t -i :$(API_PORT) 2>/dev/null | xargs kill 2>/dev/null || true
 	@lsof -t -i :$(WEB_PORT) 2>/dev/null | xargs kill 2>/dev/null || true
 
 open:
-	@open http://localhost:$(WEB_PORT) 2>/dev/null || xdg-open http://localhost:$(WEB_PORT) 2>/dev/null || echo "open http://localhost:$(WEB_PORT)"
+	@open http://localhost:$(WEB_PORT) 2>/dev/null || echo "open http://localhost:$(WEB_PORT)"
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -193,13 +214,13 @@ test-live:
 	env -u HTTPS_PROXY -u HTTP_PROXY -u ALL_PROXY \
 		$(PYTEST) server/tests/e2e/test_live_http.py -v
 
-test-all:
-	$(PYTEST) server/tests/ -q
-
 test-e2e-browser:
-	@curl -sf http://localhost:8100/healthz > /dev/null 2>&1 || (echo "API not running. Run: make serve" && exit 1)
-	@curl -sf http://localhost:3010 > /dev/null 2>&1 || (echo "Web not running. Run: make serve" && exit 1)
-	cd web && npx playwright test --reporter=html
+	@curl -sf --noproxy '*' http://localhost:$(API_PORT)/healthz > /dev/null 2>&1 || (echo "API not running. Run: make serve" && exit 1)
+	@curl -sf --noproxy '*' http://localhost:$(WEB_PORT) > /dev/null 2>&1 || (echo "Web not running. Run: make serve" && exit 1)
+	cd web && pnpm exec playwright test
+
+test-all: test test-e2e
+	@echo "All server tests passed"
 
 tsc:
 	cd web && npx tsc --noEmit

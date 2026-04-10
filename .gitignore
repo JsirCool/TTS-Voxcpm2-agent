@@ -17,3 +17,6 @@ __pycache__/
 .harness/tts-known-issues.json
 .claude/
 .venv-server/
+docker/.env
+web/test-results/
+web/playwright-report/
