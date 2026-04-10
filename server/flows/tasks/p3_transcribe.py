@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable
@@ -61,7 +62,7 @@ from server.core.storage import (
 log = logging.getLogger(__name__)
 
 # Default whisperx-svc endpoint.
-DEFAULT_WHISPERX_URL = "http://whisperx-svc:7860"
+DEFAULT_WHISPERX_URL = os.environ.get("WHISPERX_URL", "http://localhost:7860")
 
 
 # ---------------------------------------------------------------------------

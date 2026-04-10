@@ -1,0 +1,7 @@
+{
+  "title": "E2E Test Episode",
+  "segments": [
+    {"id": 1, "type": "hook", "text": "你好世界。"},
+    {"id": 2, "type": "content", "text": "这是测试内容。"}
+  ]
+}

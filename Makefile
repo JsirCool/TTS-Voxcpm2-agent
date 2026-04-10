@@ -196,6 +196,11 @@ test-live:
 test-all:
 	$(PYTEST) server/tests/ -q
 
+test-e2e-browser:
+	@curl -sf http://localhost:8100/healthz > /dev/null 2>&1 || (echo "API not running. Run: make serve" && exit 1)
+	@curl -sf http://localhost:3010 > /dev/null 2>&1 || (echo "Web not running. Run: make serve" && exit 1)
+	cd web && npx playwright test --reporter=html
+
 tsc:
 	cd web && npx tsc --noEmit
 
