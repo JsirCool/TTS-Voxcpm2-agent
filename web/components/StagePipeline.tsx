@@ -1,0 +1,118 @@
+"use client";
+
+import type { StageName, StageRun } from "@/lib/types";
+import { STAGE_ORDER, getStageRun } from "@/lib/types";
+
+interface Props {
+  stageRuns: StageRun[];
+  onStageClick?: (stage: StageName) => void;
+  compact?: boolean;
+}
+
+const FULL_LABELS: Record<StageName, string> = {
+  p1: "P1",
+  p2: "P2",
+  check2: "CHECK2",
+  p3: "P3",
+  check3: "CHECK3",
+  p5: "P5",
+  p6: "P6",
+};
+
+const COMPACT_LABELS: Record<StageName, string> = {
+  p1: "P1",
+  p2: "P2",
+  check2: "C2",
+  p3: "P3",
+  check3: "C3",
+  p5: "P5",
+  p6: "P6",
+};
+
+function stageColorClasses(sr: StageRun | undefined): string {
+  if (!sr || sr.status === "pending") return "bg-neutral-200 text-neutral-500";
+  if (sr.status === "running") return "bg-blue-500 text-white animate-pulse";
+  if (sr.status === "ok") return "bg-emerald-500 text-white";
+  return "bg-red-500 text-white";
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (ms == null) return "";
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function buildTitle(stage: StageName, sr: StageRun | undefined): string {
+  const label = FULL_LABELS[stage];
+  if (!sr) return `${label}: pending`;
+  const parts: string[] = [`${label}: ${sr.status}`];
+  if (sr.stale) parts.push("stale — upstream updated");
+  if (sr.attempt > 1) parts.push(`attempt ${sr.attempt}`);
+  if (sr.durationMs != null) parts.push(formatDuration(sr.durationMs));
+  if (sr.status === "failed" && sr.error) parts.push(sr.error);
+  return parts.join(" · ");
+}
+
+export function StagePipeline({
+  stageRuns,
+  onStageClick,
+  compact = false,
+}: Props) {
+  const labels = compact ? COMPACT_LABELS : FULL_LABELS;
+  const pillSize = compact
+    ? "h-5 px-1.5 text-[10px]"
+    : "h-6 px-2 text-xs";
+  const clickable = Boolean(onStageClick);
+
+  return (
+    <div className="inline-flex items-center">
+      {STAGE_ORDER.map((stage, idx) => {
+        const sr = getStageRun(stageRuns, stage);
+        const color = stageColorClasses(sr);
+        const hover = clickable ? "cursor-pointer hover:brightness-110" : "";
+        const title = buildTitle(stage, sr);
+        const isFailed = sr?.status === "failed";
+        const isRunning = sr?.status === "running";
+        const isStale = !!sr?.stale;
+        const showAttemptBadge = (sr?.attempt ?? 0) > 1;
+
+        return (
+          <div key={stage} className="inline-flex items-center">
+            {idx > 0 && (
+              <span aria-hidden className="inline-block h-px w-2 bg-neutral-300" />
+            )}
+            <button
+              type="button"
+              title={title}
+              onClick={onStageClick ? () => onStageClick(stage) : undefined}
+              disabled={!clickable}
+              className={[
+                "relative inline-flex items-center gap-1 rounded-full font-mono font-semibold uppercase tracking-wide transition",
+                pillSize,
+                color,
+                hover,
+                clickable ? "" : "cursor-default",
+                isStale ? "ring-2 ring-amber-500 ring-offset-1" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
+              <span>{labels[stage]}</span>
+              {isFailed && <span aria-label="failed" className="leading-none">⚠</span>}
+              {isStale && !isFailed && <span aria-label="stale" className="leading-none text-[11px]">⟳</span>}
+              {isRunning && <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-white/90" />}
+              {showAttemptBadge && (
+                <sup
+                  aria-label={`attempt ${sr!.attempt}`}
+                  className="absolute -top-1 -right-1 rounded-full bg-neutral-900 px-1 text-[9px] font-bold leading-tight text-white"
+                >
+                  {sr!.attempt}
+                </sup>
+              )}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
