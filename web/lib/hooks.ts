@@ -208,6 +208,25 @@ export function getAudioUrl(audioUri: string): string {
   return `${getApiUrl()}/audio/${encodeURIComponent(audioUri)}`;
 }
 
+export function useEpisodeLogs(id: string | null, tail = 50) {
+  return useSWR<string[]>(
+    id ? `api:logs:${id}` : null,
+    async () => {
+      const { data, error } = await api.GET("/episodes/{episode_id}/logs", {
+        params: {
+          path: { episode_id: id! },
+          query: { tail },
+        },
+      });
+      if (error) throw new Error(String(error));
+      return data?.lines ?? [];
+    },
+    {
+      refreshInterval: 5000,
+    },
+  );
+}
+
 export async function exportEpisode(id: string, dir: string): Promise<void> {
   throw new Error(`exportEpisode not implemented (target: ${dir})`);
 }

@@ -102,11 +102,12 @@ class EpisodeLogsResponse(_CamelBase):
 
 @router.get("/episodes", response_model=list[EpisodeSummary])
 async def list_episodes(
+    include_archived: bool = False,
     session: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
     repo = EpisodeRepo(session)
     chunk_repo = ChunkRepo(session)
-    episodes = await repo.list()
+    episodes = await repo.list(include_archived=include_archived)
     result: list[EpisodeSummary] = []
     for ep in episodes:
         chunks = await chunk_repo.list_by_episode(ep.id)

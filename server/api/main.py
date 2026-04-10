@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server.api.auth import _Unauthorized, unauthorized_handler, verify_token
 from server.api.errors import install_error_handlers
+from server.api.routes.audio import router as audio_router
 from server.api.routes.episodes import router as episodes_router
 from server.api.routes.health import router as health_router
 from server.api.sse import router as sse_router
@@ -66,6 +67,7 @@ app.add_exception_handler(_Unauthorized, unauthorized_handler)  # type: ignore[a
 
 # --- routers ---
 
+app.include_router(audio_router)
 app.include_router(episodes_router)
 app.include_router(health_router)
 app.include_router(sse_router)

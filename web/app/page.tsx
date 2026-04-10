@@ -5,6 +5,7 @@ import type { ChunkEdit, EditBatch } from "@/lib/types";
 import {
   useEpisodes,
   useEpisode,
+  useEpisodeLogs,
   runEpisode,
   applyEdits as apiApplyEdits,
   createEpisode,
@@ -26,6 +27,7 @@ export default function Page() {
 
   const { data: episodes, mutate: mutateList } = useEpisodes();
   const { data: episode, mutate: mutateDetail } = useEpisode(selectedId);
+  const { data: logLines } = useEpisodeLogs(selectedId);
 
   const dirtyCount = useMemo(() => {
     let tts = 0;
@@ -169,7 +171,7 @@ export default function Page() {
                   </>
                 )}
               </div>
-              <LogViewer log={[]} />
+              <LogViewer log={logLines ?? []} />
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">
