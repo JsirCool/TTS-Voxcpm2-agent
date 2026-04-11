@@ -647,17 +647,75 @@ async def retry_chunk(
         )
         flow_run_id = str(flow_run.id)
     else:
-        from server.flows.retry_chunk import retry_chunk_stage_flow
         from server.flows.worker_bootstrap import bootstrap as _bootstrap
-        import threading
-        def _retry_thread():
+        from datetime import datetime, timezone
+        _bootstrap()
+
+        async def _retry_dev():
+            import logging
+            from server.flows.worker_bootstrap import _session_factory
+            _log = logging.getLogger("dev_retry")
             try:
-                _bootstrap()
-                asyncio.run(retry_chunk_stage_flow(episode_id, chunk_id, from_stage, cascade=cascade))
+                STAGE_ORDER = ["p2", "p3", "p5"]
+                start_idx = STAGE_ORDER.index(from_stage) if from_stage in STAGE_ORDER else 0
+                stages_to_run = STAGE_ORDER[start_idx:] if cascade else [from_stage]
+
+                async def _mark(stage: str, status: str, error: str | None = None, started: datetime | None = None, context: dict | None = None):
+                    from server.core.repositories import StageRunRepo, EventRepo
+                    async with _session_factory() as s:
+                        sr_repo = StageRunRepo(s)
+                        existing = await sr_repo.get(chunk_id, stage)
+                        attempt = (existing.attempt + 1) if existing and status == "running" else (existing.attempt if existing else 1)
+                        finished = datetime.now(timezone.utc) if status in ("ok", "failed") else None
+                        duration_ms = int((finished - started).total_seconds() * 1000) if finished and started else None
+                        await sr_repo.upsert(chunk_id=chunk_id, stage=stage, status=status, attempt=attempt,
+                            started_at=started, finished_at=finished, duration_ms=duration_ms, error=error)
+                        if context and status in ("ok", "failed"):
+                            await EventRepo(s).write(episode_id=episode_id, chunk_id=chunk_id,
+                                kind=f"stage_{status}", payload={"stage": stage, "attempt": attempt, "durationMs": duration_ms, **context})
+                        await s.commit()
+
+                # Read chunk text + config
+                async with _session_factory() as s:
+                    from server.core.repositories import ChunkRepo, EpisodeRepo
+                    _chunk = await ChunkRepo(s).get(chunk_id)
+                    _text = _chunk.text_normalized if _chunk else ""
+                    ep = await EpisodeRepo(s).get(episode_id)
+                    tts_config = (ep.config if ep else None) or {}
+
+                for stage in stages_to_run:
+                    t0 = datetime.now(timezone.utc)
+                    await _mark(stage, "running", started=t0)
+                    try:
+                        if stage == "p2":
+                            from server.flows.tasks.p2_synth import run_p2_synth
+                            result = await run_p2_synth(chunk_id, params=tts_config or None)
+                            await _mark(stage, "ok", started=t0, context={
+                                "request": {"text": _text[:100], **(tts_config if isinstance(tts_config, dict) else {})},
+                                "response": {"takeId": result.take_id, "audioUri": result.audio_uri, "durationS": result.duration_s},
+                            })
+                        elif stage == "p3":
+                            from server.flows.tasks.p3_transcribe import run_p3_transcribe
+                            result = await run_p3_transcribe(chunk_id)
+                            await _mark(stage, "ok", started=t0, context={
+                                "response": {"transcriptUri": result.transcript_uri, "wordCount": result.word_count},
+                            })
+                        elif stage == "p5":
+                            from server.flows.tasks.p5_subtitles import run_p5_subtitles
+                            result = await run_p5_subtitles(chunk_id)
+                            await _mark(stage, "ok", started=t0, context={
+                                "response": {"subtitleUri": result.subtitle_uri, "lineCount": result.line_count},
+                            })
+                        _log.info("retry %s %s → ok", chunk_id, stage)
+                    except Exception as e:
+                        await _mark(stage, "failed", error=str(e), started=t0)
+                        _log.error("retry %s %s → failed: %s", chunk_id, stage, e)
+                        break
             except Exception as exc:
                 import logging
-                logging.getLogger("retry_chunk").error("retry failed: %s", exc, exc_info=True)
-        threading.Thread(target=_retry_thread, daemon=True).start()
+                logging.getLogger("dev_retry").error("retry failed: %s", exc, exc_info=True)
+
+        asyncio.create_task(_retry_dev())
 
     await session.commit()
     return RetryResponse(flow_run_id=flow_run_id)
@@ -704,17 +762,25 @@ async def finalize_take(
         )
         flow_run_id = str(flow_run.id)
     else:
-        from server.flows.finalize_take import finalize_take_flow
         from server.flows.worker_bootstrap import bootstrap as _bootstrap
-        import threading
-        def _finalize_thread():
+        _bootstrap()
+
+        async def _finalize_dev():
             try:
-                _bootstrap()
-                asyncio.run(finalize_take_flow(episode_id, chunk_id, take_id))
+                from server.flows.worker_bootstrap import _session_factory
+                # Set selected take
+                async with _session_factory() as s:
+                    await ChunkRepo(s).set_selected_take(chunk_id, take_id)
+                    await s.commit()
+                # Run P3 → P5
+                from server.flows.tasks.p3_transcribe import run_p3_transcribe
+                from server.flows.tasks.p5_subtitles import run_p5_subtitles
+                await run_p3_transcribe(chunk_id)
+                await run_p5_subtitles(chunk_id)
             except Exception as exc:
                 import logging
                 logging.getLogger("finalize_take").error("finalize failed: %s", exc, exc_info=True)
-        threading.Thread(target=_finalize_thread, daemon=True).start()
+        asyncio.create_task(_finalize_dev())
 
     await session.commit()
     return FinalizeResponse(flow_run_id=flow_run_id)
