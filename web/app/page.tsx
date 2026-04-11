@@ -112,6 +112,7 @@ export default function Page() {
                 episodeId={episode.id}
                 config={episode.config}
                 onConfigSaved={() => mutateDetail()}
+                onUpdateConfig={store.updateConfig}
               />
               <StageProgress
                 status={episode.status}
@@ -162,6 +163,7 @@ export default function Page() {
                         if (take) store.previewTake(take.audioUri);
                       }}
                       onUseTake={async (cid, takeId) => { await store.finalizeTake(episode.id, cid, takeId); await mutateDetail(); }}
+                      getAudioUrl={getAudioUrl}
                     />
                   </>
                 )}
@@ -190,11 +192,17 @@ export default function Page() {
           <StageLogDrawer
             open
             onClose={store.closeDrawer}
-            episodeId={store.selectedId}
             chunkId={store.drawerOpen.cid}
             stage={store.drawerOpen.stage}
             stageRun={stageRun}
-            onAfterRetry={() => { mutateDetail(); store.closeDrawer(); }}
+            log=""
+            logLoading={false}
+            logError={null}
+            onRetry={async (cascade) => {
+              await store.retryChunk(store.selectedId!, store.drawerOpen!.cid, store.drawerOpen!.stage, cascade);
+              await mutateDetail();
+              store.closeDrawer();
+            }}
           />
         );
       })()}

@@ -1,31 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { updateConfig } from "@/lib/hooks";
+import { useCallback, useState, type ReactNode } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 // ---------------------------------------------------------------------------
-// HelpIcon (from original)
-// ---------------------------------------------------------------------------
-
-function HelpIcon({ children, placement = "right" }: { children: ReactNode; placement?: "left" | "right" }) {
-  const tipPos = placement === "right" ? "left-5 top-0" : "right-5 top-0";
-  return (
-    <span className="relative inline-flex group cursor-help">
-      <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 text-neutral-400 text-[9px] font-bold leading-none hover:border-neutral-600 hover:text-neutral-600" aria-label="说明">?</span>
-      <span role="tooltip" className={`pointer-events-none absolute ${tipPos} z-50 w-64 opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-150 bg-neutral-900 text-white text-[11px] leading-relaxed rounded-md shadow-lg px-3 py-2`}>{children}</span>
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Types
+// Props
 // ---------------------------------------------------------------------------
 
 interface Props {
   episodeId: string;
   config: Record<string, unknown>;
   onConfigSaved?: () => void;
+  onUpdateConfig: (epId: string, config: Record<string, unknown>) => Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// Form types
+// ---------------------------------------------------------------------------
 
 interface FormState {
   model: string;
@@ -35,13 +27,7 @@ interface FormState {
   reference_id: string;
 }
 
-const DEFAULTS: FormState = {
-  model: "s2-pro",
-  temperature: "0.7",
-  top_p: "0.7",
-  speed: "1.15",
-  reference_id: "",
-};
+const DEFAULTS: FormState = { model: "s2-pro", temperature: "0.7", top_p: "0.7", speed: "1.15", reference_id: "" };
 
 function configToForm(config: Record<string, unknown>): FormState {
   return {
@@ -64,10 +50,27 @@ function formToConfig(form: FormState): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Config Bar (top-level: one-line summary + edit button)
+// HelpTip (shadcn Tooltip wrapper)
 // ---------------------------------------------------------------------------
 
-export function TtsConfigBar({ episodeId, config, onConfigSaved }: Props) {
+function HelpTip({ children }: { children: ReactNode }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-neutral-300 text-neutral-400 text-[9px] font-bold cursor-help hover:border-neutral-600 hover:text-neutral-600">?</span>
+        </TooltipTrigger>
+        <TooltipContent side="right">{children}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Config Bar (one-line summary + edit button)
+// ---------------------------------------------------------------------------
+
+export function TtsConfigBar({ episodeId, config, onConfigSaved, onUpdateConfig }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [savedHint, setSavedHint] = useState(false);
 
@@ -89,17 +92,10 @@ export function TtsConfigBar({ episodeId, config, onConfigSaved }: Props) {
         {field("top_p", String(config.top_p ?? "0.7"))}
         {field("speed", `${config.speed ?? 1.15}x`)}
         {field("reference_id", String(config.reference_id || "(none)"))}
-        <button
-          type="button"
-          onClick={() => setDialogOpen(true)}
+        <button type="button" onClick={() => setDialogOpen(true)}
           className="ml-auto px-2 py-0.5 text-[11px] rounded border border-neutral-300 text-neutral-600 hover:bg-white hover:border-neutral-400"
-          title="编辑 TTS 配置"
-        >
-          ✎ 编辑
-        </button>
-        {hasOverride && (
-          <span className="text-[10px] text-blue-600 font-mono" title="此 episode 有自定义配置">● override</span>
-        )}
+          title="编辑 TTS 配置">✎ 编辑</button>
+        {hasOverride && <span className="text-[10px] text-blue-600 font-mono">● override</span>}
       </div>
       {savedHint && (
         <div className="px-6 py-1 border-b border-emerald-200 bg-emerald-50 text-[11px] text-emerald-800 flex items-center gap-2">
@@ -107,131 +103,96 @@ export function TtsConfigBar({ episodeId, config, onConfigSaved }: Props) {
           <span className="text-emerald-700">· 点 chunk 的 P2 pill → 仅重跑 P2 验证新配置</span>
         </div>
       )}
-      {dialogOpen && (
-        <TtsConfigDialog
-          episodeId={episodeId}
-          config={config}
-          onClose={() => setDialogOpen(false)}
-          onSaved={() => {
-            setDialogOpen(false);
-            setSavedHint(true);
-            onConfigSaved?.();
-            setTimeout(() => setSavedHint(false), 6000);
-          }}
-        />
-      )}
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <ConfigForm
+            episodeId={episodeId}
+            config={config}
+            onClose={() => setDialogOpen(false)}
+            onSaved={() => {
+              setDialogOpen(false);
+              setSavedHint(true);
+              onConfigSaved?.();
+              setTimeout(() => setSavedHint(false), 6000);
+            }}
+            onUpdateConfig={onUpdateConfig}
+          />
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Config Dialog (edit form in overlay)
+// Config Form (inside Dialog — pure UI, action via callback)
 // ---------------------------------------------------------------------------
 
-function TtsConfigDialog({
-  episodeId,
-  config,
-  onClose,
-  onSaved,
+function ConfigForm({
+  episodeId, config, onClose, onSaved, onUpdateConfig,
 }: {
   episodeId: string;
   config: Record<string, unknown>;
   onClose: () => void;
   onSaved: () => void;
+  onUpdateConfig: (epId: string, config: Record<string, unknown>) => Promise<void>;
 }) {
   const [form, setForm] = useState<FormState>(configToForm(config));
   const [saving, setSaving] = useState(false);
-
-  const set = (key: keyof FormState, value: string) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+  const set = (key: keyof FormState, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await updateConfig(episodeId, formToConfig(form));
+      await onUpdateConfig(episodeId, formToConfig(form));
       onSaved();
     } catch (e) {
       alert(`Save failed: ${(e as Error).message}`);
-    } finally {
-      setSaving(false);
-    }
-  }, [episodeId, form, onSaved]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    } finally { setSaving(false); }
+  }, [episodeId, form, onSaved, onUpdateConfig]);
 
   const inputClass = "w-full px-2 py-1.5 text-xs border border-neutral-300 rounded font-mono focus:outline-none focus:ring-1 focus:ring-blue-400";
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-2xl w-full max-w-md flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="px-5 py-3 border-b border-neutral-200">
-          <h2 className="font-semibold text-sm">编辑 TTS 配置</h2>
-          <p className="text-[11px] text-neutral-500 mt-0.5 leading-relaxed">
-            调试工作流: <strong className="text-neutral-700">改配置 → 单 chunk retry 试听 → 满意后批量合成</strong>。
-          </p>
+    <>
+      <DialogHeader>
+        <DialogTitle>编辑 TTS 配置</DialogTitle>
+        <DialogDescription>改配置 → 单 chunk retry 试听 → 满意后批量合成</DialogDescription>
+      </DialogHeader>
+
+      <div className="px-5 py-4 space-y-3 text-sm">
+        <div>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Model <HelpTip>Fish Audio 模型。s2-pro（推荐）或 s2。</HelpTip></label>
+          <select value={form.model} onChange={(e) => set("model", e.target.value)} className={inputClass}>
+            <option value="s2-pro">s2-pro</option>
+            <option value="s2">s2</option>
+          </select>
         </div>
-
-        <div className="px-5 py-4 space-y-3 text-sm">
-          {/* Model */}
-          <div>
-            <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
-              Model
-              <HelpIcon>Fish Audio 的模型版本。当前支持 s2-pro（推荐）和 s2。</HelpIcon>
-            </label>
-            <select value={form.model} onChange={(e) => set("model", e.target.value)} className={inputClass}>
-              <option value="s2-pro">s2-pro</option>
-              <option value="s2">s2</option>
-            </select>
-          </div>
-
-          {/* Temperature */}
-          <div>
-            <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
-              Temperature
-              <HelpIcon>控制随机性。0 = 最确定性，1 = 最随机。推荐 0.5-0.8。值越低发音越稳定但可能偏机械。</HelpIcon>
-            </label>
-            <input type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => set("temperature", e.target.value)} className={inputClass} />
-          </div>
-
-          {/* Top P */}
-          <div>
-            <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
-              Top P
-              <HelpIcon>核采样参数。与 temperature 配合使用。推荐 0.5-0.8。</HelpIcon>
-            </label>
-            <input type="number" step="0.1" min="0" max="1" value={form.top_p} onChange={(e) => set("top_p", e.target.value)} className={inputClass} />
-          </div>
-
-          {/* Speed */}
-          <div>
-            <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
-              Speed
-              <HelpIcon>语速倍率。1.0 = 正常速度，1.15 = 略快。范围 0.5-2.0。</HelpIcon>
-            </label>
-            <input type="number" step="0.05" min="0.5" max="2" value={form.speed} onChange={(e) => set("speed", e.target.value)} className={inputClass} />
-          </div>
-
-          {/* Reference ID */}
-          <div>
-            <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
-              Reference ID
-              <HelpIcon placement="left">Fish Audio 声音克隆 ID。留空则用默认声音。在 Fish Audio 平台创建并获取 ID。</HelpIcon>
-            </label>
-            <input type="text" value={form.reference_id} onChange={(e) => set("reference_id", e.target.value)} className={inputClass} placeholder="留空使用默认声音" />
-          </div>
+        <div>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Temperature <HelpTip>控制随机性。0=确定性，1=随机。推荐 0.5-0.8。</HelpTip></label>
+          <input type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => set("temperature", e.target.value)} className={inputClass} />
         </div>
-
-        <div className="border-t border-neutral-200 px-5 py-3 flex items-center gap-3">
-          <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 rounded">取消</button>
-          <button type="button" onClick={handleSave} disabled={saving} className={`ml-auto px-4 py-1.5 text-xs rounded ${saving ? "bg-neutral-200 text-neutral-400" : "bg-neutral-900 text-white hover:bg-neutral-800"}`}>
-            {saving ? "保存中..." : "保存配置"}
-          </button>
+        <div>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Top P <HelpTip>核采样参数。推荐 0.5-0.8。</HelpTip></label>
+          <input type="number" step="0.1" min="0" max="1" value={form.top_p} onChange={(e) => set("top_p", e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Speed <HelpTip>语速。1.0=正常，1.15=略快。范围 0.5-2.0。</HelpTip></label>
+          <input type="number" step="0.05" min="0.5" max="2" value={form.speed} onChange={(e) => set("speed", e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Reference ID <HelpTip>Fish Audio 声音克隆 ID。留空用默认。</HelpTip></label>
+          <input type="text" value={form.reference_id} onChange={(e) => set("reference_id", e.target.value)} className={inputClass} placeholder="留空使用默认声音" />
         </div>
       </div>
-    </div>
+
+      <DialogFooter>
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 rounded">取消</button>
+        <button type="button" onClick={handleSave} disabled={saving}
+          className={`ml-auto px-4 py-1.5 text-xs rounded ${saving ? "bg-neutral-200 text-neutral-400" : "bg-neutral-900 text-white hover:bg-neutral-800"}`}>
+          {saving ? "保存中..." : "保存配置"}
+        </button>
+      </DialogFooter>
+    </>
   );
 }

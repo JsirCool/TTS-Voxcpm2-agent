@@ -18,6 +18,7 @@ interface Props {
   onStageClick?: (cid: string, stage: StageName) => void;
   onPreviewTake?: (cid: string, takeId: string) => void;
   onUseTake?: (cid: string, takeId: string) => void;
+  getAudioUrl: (uri: string) => string;
 }
 
 function computeDirty(edit: ChunkEdit | undefined): DirtyType {
@@ -43,6 +44,7 @@ export function ChunksTable({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  getAudioUrl,
 }: Props) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("subtitle");
 
@@ -116,6 +118,7 @@ export function ChunksTable({
               onStageClick={onStageClick ? (stage) => onStageClick(c.id, stage) : undefined}
               onPreviewTake={onPreviewTake ? (takeId) => onPreviewTake(c.id, takeId) : undefined}
               onUseTake={onUseTake ? (takeId) => onUseTake(c.id, takeId) : undefined}
+              getAudioUrl={getAudioUrl}
             />
           );
         })}
@@ -139,6 +142,7 @@ interface RowGroupProps {
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
+  getAudioUrl: (uri: string) => string;
 }
 
 function RowGroup({
@@ -156,6 +160,7 @@ function RowGroup({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  getAudioUrl,
 }: RowGroupProps) {
   return (
     <>
@@ -173,6 +178,7 @@ function RowGroup({
         onStageClick={onStageClick}
         onPreviewTake={onPreviewTake}
         onUseTake={onUseTake}
+        getAudioUrl={getAudioUrl}
       />
       {isEditing ? (
         <ChunkEditor

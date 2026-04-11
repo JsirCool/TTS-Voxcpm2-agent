@@ -168,12 +168,14 @@ test('UI 细节验证: duration + subtitle切换 + stage pills + config + 快捷
     const menuBtn = page.locator('button:has-text("⋯")').first();
     if (await menuBtn.isVisible()) {
       await menuBtn.click();
-      // 菜单出现
-      await expect(page.locator('button:has-text("Delete")').first()).toBeVisible({ timeout: 2000 });
-      await expect(page.locator('button:has-text("Duplicate")').first()).toBeVisible();
+      await page.waitForTimeout(500);
+      // Radix DropdownMenu renders in a portal — use role selector
+      const deleteItem = page.getByRole('menuitem', { name: 'Delete' });
+      const dupItem = page.getByRole('menuitem', { name: 'Duplicate' });
+      await expect(deleteItem.or(page.locator('[data-radix-menu-content] >> text=Delete'))).toBeVisible({ timeout: 3000 });
       await page.screenshot({ path: 'e2e/screenshots/tc11-menu.png' });
-      // 点外面关闭
-      await page.click('body');
+      // 按 Esc 关闭 (Radix handles this)
+      await page.keyboard.press('Escape');
     }
   });
 

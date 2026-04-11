@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Chunk, ChunkEdit, ChunkStatus, StageName } from "@/lib/types";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
-import { getAudioUrl } from "@/lib/hooks";
+// getAudioUrl passed via props — component must not import hooks
 import { KaraokeSubtitle } from "./KaraokeSubtitle";
 import { StagePipeline } from "./StagePipeline";
 import { TakeSelector } from "./TakeSelector";
@@ -25,6 +25,7 @@ interface Props {
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
+  getAudioUrl: (uri: string) => string;
 }
 
 function statusIcon(status: ChunkStatus) {
@@ -55,6 +56,7 @@ export function ChunkRow({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  getAudioUrl,
 }: Props) {
   void episodeId; // kept for future use
   const isDirty = dirty !== null;
