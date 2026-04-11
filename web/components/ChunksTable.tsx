@@ -18,6 +18,8 @@ interface Props {
   onStageClick?: (cid: string, stage: StageName) => void;
   onPreviewTake?: (cid: string, takeId: string) => void;
   onUseTake?: (cid: string, takeId: string) => void;
+  onSynthesize?: (cid: string) => void;
+  synthesizingCid?: string | null;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -44,6 +46,8 @@ export function ChunksTable({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  onSynthesize,
+  synthesizingCid,
   getAudioUrl,
 }: Props) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("subtitle");
@@ -118,6 +122,8 @@ export function ChunksTable({
               onStageClick={onStageClick ? (stage) => onStageClick(c.id, stage) : undefined}
               onPreviewTake={onPreviewTake ? (takeId) => onPreviewTake(c.id, takeId) : undefined}
               onUseTake={onUseTake ? (takeId) => onUseTake(c.id, takeId) : undefined}
+              onSynthesize={onSynthesize ? () => onSynthesize(c.id) : undefined}
+              synthesizing={synthesizingCid === c.id}
               getAudioUrl={getAudioUrl}
             />
           );
@@ -142,6 +148,8 @@ interface RowGroupProps {
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
+  onSynthesize?: () => void;
+  synthesizing?: boolean;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -160,6 +168,8 @@ function RowGroup({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  onSynthesize,
+  synthesizing,
   getAudioUrl,
 }: RowGroupProps) {
   return (
@@ -178,6 +188,8 @@ function RowGroup({
         onStageClick={onStageClick}
         onPreviewTake={onPreviewTake}
         onUseTake={onUseTake}
+        onSynthesize={onSynthesize}
+        synthesizing={synthesizing}
         getAudioUrl={getAudioUrl}
       />
       {isEditing ? (

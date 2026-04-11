@@ -25,6 +25,8 @@ interface Props {
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
+  onSynthesize?: () => void;
+  synthesizing?: boolean;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -56,6 +58,8 @@ export function ChunkRow({
   onStageClick,
   onPreviewTake,
   onUseTake,
+  onSynthesize,
+  synthesizing = false,
   getAudioUrl,
 }: Props) {
   void episodeId; // kept for future use
@@ -103,9 +107,9 @@ export function ChunkRow({
   const currentTake = chunk.takes.find((t) => t.id === chunk.selectedTakeId);
   const durationS = currentTake?.durationS ?? 0;
 
-  const canPlay =
-    (chunk.status === "synth_done" || chunk.status === "transcribed") &&
-    !isDirty;
+  const hasAudio = chunk.status === "synth_done" || chunk.status === "transcribed";
+  const canPlay = hasAudio && !isDirty;
+  const needsSynth = chunk.status === "pending" && !isDirty;
 
   const handleSeek = (timeS: number) => {
     if (!canPlay) return;
@@ -151,19 +155,35 @@ export function ChunkRow({
         {durationS > 0 ? `${durationS.toFixed(1)}s` : "--"}
       </td>
       <td className="py-2.5 align-top">
-        <button
-          type="button"
-          onClick={onPlay}
-          disabled={!canPlay}
-          title={isDirty ? "Has staged changes, Apply first" : ""}
-          className={`w-7 h-7 inline-flex items-center justify-center rounded ${
-            canPlay
-              ? "hover:bg-neutral-200 text-neutral-700"
-              : "text-neutral-300 cursor-not-allowed"
-          } ${isPlaying ? "bg-neutral-900 text-white hover:bg-neutral-800" : ""}`}
-        >
-          {isPlaying ? "⏸" : "▶"}
-        </button>
+        {needsSynth ? (
+          <button
+            type="button"
+            onClick={onSynthesize}
+            disabled={synthesizing}
+            title="合成并播放"
+            className={`w-7 h-7 inline-flex items-center justify-center rounded ${
+              synthesizing
+                ? "text-blue-400 animate-pulse cursor-wait"
+                : "hover:bg-blue-100 text-blue-600"
+            }`}
+          >
+            ▸
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onPlay}
+            disabled={!canPlay}
+            title={isDirty ? "Has staged changes, Apply first" : ""}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded ${
+              canPlay
+                ? "hover:bg-neutral-200 text-neutral-700"
+                : "text-neutral-300 cursor-not-allowed"
+            } ${isPlaying ? "bg-neutral-900 text-white hover:bg-neutral-800" : ""}`}
+          >
+            {isPlaying ? "⏸" : "▶"}
+          </button>
+        )}
       </td>
       <td className="py-2.5 pr-6 align-top">
         <div className="flex items-start flex-wrap">

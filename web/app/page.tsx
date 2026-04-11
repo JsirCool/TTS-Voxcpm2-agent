@@ -71,6 +71,7 @@ export default function Page() {
 
   // --- NewEpisode dialog state (local — only used here) ---
   const [newEpOpen, setNewEpOpen] = useState(false);
+  const [synthesizingCid, setSynthesizingCid] = useState<string | null>(null);
 
   return (
     <div className="h-screen flex flex-col bg-neutral-50 text-neutral-900 overflow-hidden">
@@ -165,6 +166,20 @@ export default function Page() {
                         if (take) store.previewTake(take.audioUri);
                       }}
                       onUseTake={async (cid, takeId) => { await store.finalizeTake(episode.id, cid, takeId); await mutateDetail(); }}
+                      onSynthesize={async (cid) => {
+                        setSynthesizingCid(cid);
+                        try {
+                          await store.retryChunk(episode.id, cid, "p2", true);
+                          await mutateDetail();
+                          // Auto-play after synthesis
+                          store.togglePlay(cid);
+                        } catch (e) {
+                          alert(`合成失败: ${(e as Error).message}`);
+                        } finally {
+                          setSynthesizingCid(null);
+                        }
+                      }}
+                      synthesizingCid={synthesizingCid}
                       getAudioUrl={getAudioUrl}
                     />
                   </>
