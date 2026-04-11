@@ -166,16 +166,16 @@ function TtsConfigDialog({
   const inputClass = "w-full px-2 py-1.5 text-xs border border-neutral-300 rounded font-mono focus:outline-none focus:ring-1 focus:ring-blue-400";
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black/20 z-30" onClick={onClose} />
-      <div className="fixed right-0 top-0 h-full w-[26rem] bg-white shadow-2xl z-40 flex flex-col">
-        <div className="h-12 border-b border-neutral-200 flex items-center px-4 gap-2 shrink-0">
-          <span className="font-semibold text-sm">TTS Config</span>
-          <span className="text-xs text-neutral-400 font-mono">{episodeId}</span>
-          <button type="button" onClick={onClose} className="ml-auto w-7 h-7 inline-flex items-center justify-center rounded hover:bg-neutral-100 text-neutral-500" title="关闭">✕</button>
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-2xl w-full max-w-md flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-neutral-200">
+          <h2 className="font-semibold text-sm">编辑 TTS 配置</h2>
+          <p className="text-[11px] text-neutral-500 mt-0.5 leading-relaxed">
+            调试工作流: <strong className="text-neutral-700">改配置 → 单 chunk retry 试听 → 满意后批量合成</strong>。
+          </p>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="px-5 py-4 space-y-3 text-sm">
           {/* Model */}
           <div>
             <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">
@@ -225,13 +225,13 @@ function TtsConfigDialog({
           </div>
         </div>
 
-        <div className="border-t border-neutral-200 px-4 py-3 shrink-0 flex items-center gap-3">
+        <div className="border-t border-neutral-200 px-5 py-3 flex items-center gap-3">
           <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 rounded">取消</button>
           <button type="button" onClick={handleSave} disabled={saving} className={`ml-auto px-4 py-1.5 text-xs rounded ${saving ? "bg-neutral-200 text-neutral-400" : "bg-neutral-900 text-white hover:bg-neutral-800"}`}>
             {saving ? "保存中..." : "保存配置"}
           </button>
         </div>
       </div>
-    </>
+    </div>
   );
 }
