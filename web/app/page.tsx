@@ -211,7 +211,15 @@ export default function Page() {
               <StageProgress
                 status={episode.status}
                 running={running}
-                currentStage={null}
+                currentStage={(() => {
+                  if (!running) return null;
+                  // 从 stageRuns 推导当前 stage
+                  for (const c of episode.chunks) {
+                    const runningSr = c.stageRuns.find(sr => sr.status === "running");
+                    if (runningSr) return runningSr.stage.toUpperCase();
+                  }
+                  return null;
+                })()}
                 totalChunks={episode.chunks.length}
               />
               {episode.chunks.length > 0 && (
