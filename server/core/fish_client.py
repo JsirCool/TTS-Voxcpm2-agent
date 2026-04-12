@@ -167,8 +167,16 @@ class FishTTSClient:
             async with self._client() as http:
                 response = await http.post(self._url, json=payload, headers=headers)
         except Exception as exc:
+            # httpx ConnectError/ConnectTimeout often have empty str(),
+            # dig into the cause chain for a meaningful message.
+            detail = str(exc)
+            if not detail.strip():
+                cause = exc
+                while cause and not str(cause).strip():
+                    cause = cause.__cause__ or cause.__context__
+                detail = f"{type(cause).__name__}" if cause else "connection failed"
             raise FishClientError(
-                f"Failed to connect to Fish TTS at {self._url}: {type(exc).__name__}: {exc}",
+                f"Failed to connect to Fish TTS at {self._url} — {type(exc).__name__}: {detail}",
             ) from exc
 
         return self._handle_response(response)

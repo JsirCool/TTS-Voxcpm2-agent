@@ -492,11 +492,8 @@ async def run_episode(
                             },
                         })
                     except Exception as e:
-                        import traceback
-                        # Include cause chain for actionable diagnostics
-                        cause = e.__cause__ or e.__context__
-                        cause_info = f" ← {type(cause).__name__}: {cause}" if cause else ""
-                        err_msg = f"{type(e).__name__}: {e}{cause_info}"
+                        # Build actionable error message
+                        err_msg = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
                         # Truncate but keep enough for debugging
                         if len(err_msg) > 500:
                             err_msg = err_msg[:500] + "..."
