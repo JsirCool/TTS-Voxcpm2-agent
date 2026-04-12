@@ -512,20 +512,36 @@ async def run_episode(
                             pass
                         raise
 
-                # P3: transcribe
-                from server.flows.tasks.p3_transcribe import run_p3_transcribe
+                # P2c: WAV format check
+                from server.flows.tasks.p2c_check import run_p2c_check
                 for cid in target_ids:
-                    _log.info("P3 transcribe %s", cid)
+                    _log.info("P2c check %s", cid)
                     t0 = datetime.now(timezone.utc)
-                    await _mark_stage(cid, "p3", "running", started=t0)
+                    await _mark_stage(cid, "p2c", "running", started=t0)
                     try:
-                        p3_result = await run_p3_transcribe(cid)
-                        await _mark_stage(cid, "p3", "ok", started=t0, context={
-                            "request": {"whisperxUrl": os.environ.get("WHISPERX_URL", "http://localhost:7860")},
-                            "response": {"transcriptUri": p3_result.transcript_uri, "wordCount": p3_result.word_count},
+                        p2c_result = await run_p2c_check(cid)
+                        await _mark_stage(cid, "p2c", "ok", started=t0, context={
+                            "response": p2c_result if isinstance(p2c_result, dict) else {"status": "ok"},
                         })
                     except Exception as e:
-                        await _mark_stage(cid, "p3", "failed", error=str(e), started=t0)
+                        err_msg = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+                        await _mark_stage(cid, "p2c", "failed", error=err_msg, started=t0)
+                        raise
+
+                # P2v: ASR verify
+                from server.flows.tasks.p2v_verify import run_p2v_verify
+                for cid in target_ids:
+                    _log.info("P2v verify %s", cid)
+                    t0 = datetime.now(timezone.utc)
+                    await _mark_stage(cid, "p2v", "running", started=t0)
+                    try:
+                        p2v_result = await run_p2v_verify(cid)
+                        await _mark_stage(cid, "p2v", "ok", started=t0, context={
+                            "response": {"verdict": p2v_result.verdict, "charRatio": p2v_result.char_ratio, "transcriptUri": p2v_result.transcript_uri},
+                        })
+                    except Exception as e:
+                        err_msg = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
+                        await _mark_stage(cid, "p2v", "failed", error=err_msg, started=t0)
                         raise
 
                 # P5: subtitles
