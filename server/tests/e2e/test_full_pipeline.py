@@ -65,13 +65,21 @@ class FakeFishClient:
 
 
 def _fake_whisperx_handler(request: httpx.Request) -> httpx.Response:
-    """Mock httpx transport handler that returns a fake transcript."""
+    """Mock httpx transport handler that returns a fake transcript.
+
+    Returns a generic transcript whose total character length is ~20 chars,
+    producing a char_ratio near 1.0 for both e2e test segments (~23-28 chars
+    after stripping whitespace).
+    """
     if "/transcribe" in str(request.url):
+        # ~25 chars to produce char_ratio ≈ 1.0 for both e2e chunks
+        # chunk1 "Helloworld,thisisatest." = 23 chars → ratio 25/23 = 1.09 ✓
+        # chunk2 "Secondsegmentforthepipeline." = 28 chars → ratio 25/28 = 0.89 ✓
+        words = [
+            {"word": "abcdefghijklmnopqrstuvwxy", "start": 0.0, "end": 1.0, "score": 0.95},
+        ]
         transcript = {
-            "transcript": [
-                {"word": "test", "start": 0.0, "end": 0.5, "score": 0.99},
-                {"word": "sentence", "start": 0.5, "end": 1.0, "score": 0.98},
-            ],
+            "transcript": words,
             "language": "en",
             "duration_s": 1.0,
         }
