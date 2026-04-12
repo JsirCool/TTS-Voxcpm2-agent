@@ -2,6 +2,7 @@
 
 import { useEffect, useCallback, useState, useMemo } from "react";
 import useSWR from "swr";
+import { toast } from "sonner";
 import type { Episode, StageName } from "@/lib/types";
 import { useHarnessStore } from "@/lib/store";
 import { useEpisodes, useEpisode, useEpisodeLogs, getAudioUrl } from "@/lib/hooks";
@@ -24,7 +25,7 @@ export default function Page() {
   const store = useHarnessStore();
 
   // --- Server state (SWR) ---
-  const { data: episodes, mutate: mutateList } = useEpisodes();
+  const { data: episodes, error: episodesError, mutate: mutateList } = useEpisodes();
   const { data: episode, error: episodeError, mutate: mutateDetail } = useEpisode(store.selectedId);
   const { data: logLines } = useEpisodeLogs(store.selectedId);
 
@@ -42,7 +43,7 @@ export default function Page() {
           await mutateDetail();
           await mutateList();
         } catch (e) {
-          alert(`操作失败: ${(e as Error).message}`);
+          toast.error("操作失败", { description: (e as Error).message });
         }
       },
     [mutateDetail, mutateList],
@@ -96,9 +97,10 @@ export default function Page() {
           selectedId={store.selectedId}
           onSelect={store.selectEpisode}
           onNewEpisode={() => setNewEpOpen(true)}
-          onDelete={async (id) => { if (confirm(`确认删除 ${id}？`)) { await store.deleteEpisode(id); await mutateList(); } }}
-          onDuplicate={async (id) => { const newId = prompt(`复制 ${id} 到新 ID:`, `${id}-copy`); if (newId?.trim()) { await store.duplicateEpisode(id, newId.trim()); await mutateList(); } }}
-          onArchive={async (id) => { if (confirm(`归档 ${id}？`)) { await store.archiveEpisode(id); await mutateList(); } }}
+          error={episodesError ?? null}
+          onDelete={async (id) => { if (confirm(`确认删除 ${id}？`)) { try { await store.deleteEpisode(id); await mutateList(); } catch (e) { toast.error("删除失败", { description: (e as Error).message }); } } }}
+          onDuplicate={async (id) => { const newId = prompt(`复制 ${id} 到新 ID:`, `${id}-copy`); if (newId?.trim()) { try { await store.duplicateEpisode(id, newId.trim()); await mutateList(); } catch (e) { toast.error("复制失败", { description: (e as Error).message }); } } }}
+          onArchive={async (id) => { if (confirm(`归档 ${id}？`)) { try { await store.archiveEpisode(id); await mutateList(); } catch (e) { toast.error("归档失败", { description: (e as Error).message }); } } }}
         />
 
         {/* Main content */}
@@ -174,7 +176,7 @@ export default function Page() {
                           // Auto-play after synthesis
                           store.togglePlay(cid);
                         } catch (e) {
-                          alert(`合成失败: ${(e as Error).message}`);
+                          toast.error("合成失败", { description: (e as Error).message });
                         } finally {
                           setSynthesizingCid(null);
                         }

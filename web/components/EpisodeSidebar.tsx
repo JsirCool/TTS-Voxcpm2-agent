@@ -11,6 +11,7 @@ interface Props {
   onDelete?: (id: string) => void;
   onDuplicate?: (id: string) => void;
   onArchive?: (id: string) => void;
+  error?: Error | null;
 }
 
 const STATUS_DOT: Record<EpisodeStatus, string> = {
@@ -22,7 +23,7 @@ const STATUS_DOT: Record<EpisodeStatus, string> = {
 };
 
 export function EpisodeSidebar({
-  episodes, selectedId, onSelect, onNewEpisode, onDelete, onDuplicate, onArchive,
+  episodes, selectedId, onSelect, onNewEpisode, onDelete, onDuplicate, onArchive, error,
 }: Props) {
   return (
     <aside className="w-56 border-r border-neutral-200 bg-white flex flex-col shrink-0">
@@ -31,6 +32,12 @@ export function EpisodeSidebar({
         <button type="button" onClick={onNewEpisode} className="text-xs px-2 py-1 rounded hover:bg-neutral-100 text-neutral-600">+ New</button>
       </div>
       <div className="flex-1 overflow-y-auto p-1.5">
+        {error ? (
+          <div className="p-3 text-xs text-red-500 text-center">
+            <div className="mb-1">加载失败</div>
+            <div className="text-[10px] text-red-400 font-mono">{error.message}</div>
+          </div>
+        ) : null}
         {episodes.map((ep) => {
           const sel = ep.id === selectedId;
           const dotClass = STATUS_DOT[ep.status] ?? "bg-neutral-300";
