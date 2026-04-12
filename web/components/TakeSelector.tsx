@@ -1,6 +1,7 @@
 "use client";
 
 import type { Take } from "@/lib/types";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface Props {
   takes: Take[];
@@ -23,8 +24,21 @@ export function TakeSelector({
 
   return (
     <div className="mt-1.5 border border-neutral-200 rounded bg-neutral-50 p-1.5 text-[11px]">
-      <div className="text-[10px] uppercase tracking-wide text-neutral-400 mb-1 px-1">
+      <div className="text-[10px] uppercase tracking-wide text-neutral-400 mb-1 px-1 flex items-center gap-1">
         Takes ({takes.length})
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex items-center justify-center w-3 h-3 rounded-full border border-neutral-300 text-[8px] font-bold cursor-help hover:border-neutral-500">?</span>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>每次合成（P2）会生成一个 Take。</p>
+              <p className="mt-1">▶ 试听某个 Take</p>
+              <p>Use 设为当前版本（会重跑 P3→P5）</p>
+              <p className="mt-1 text-neutral-400">✓ current 表示当前选中的 Take</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
       {takes.map((t, i) => {
         const isSelected = t.id === selectedTakeId;
