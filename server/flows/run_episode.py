@@ -20,10 +20,13 @@ from prefect import flow
 
 from server.core.domain import P1Result, P6Result
 from server.flows.tasks.p1_chunk import P1Context, p1_chunk
+from server.flows.tasks.p1c_check import p1c_check
 from server.flows.tasks.p2_synth import p2_synth
+from server.flows.tasks.p2c_check import p2c_check
 from server.flows.tasks.p3_transcribe import p3_transcribe
 from server.flows.tasks.p5_subtitles import p5_subtitles
 from server.flows.tasks.p6_concat import p6_concat
+from server.flows.tasks.p6v_check import p6v_check
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +114,12 @@ async def _run_synthesize(
     if skip_p2:
         log.info("D-05: skipping P2 for %d chunks (have selected_take)", len(skip_p2))
 
+    # P1c: input validation gate (only for chunks going through P2)
+    if need_p2:
+        p1c_futures = p1c_check.map(need_p2)
+        [await f.result() for f in p1c_futures]
+        log.info("P1c complete: %d chunks validated", len(need_p2))
+
     # P2: only for chunks without take; pass episode.config as TTS params
     if need_p2:
         p2_params = tts_config if tts_config else None
@@ -119,6 +128,12 @@ async def _run_synthesize(
         log.info("P2 complete: %d synthesized, %d skipped, config=%s", len(need_p2), len(skip_p2), bool(tts_config))
     else:
         log.info("P2 skipped entirely (all chunks have takes)")
+
+    # P2c: WAV format validation gate (for all chunks with audio)
+    p2c_ids = [c_id for c_id in all_ids]
+    p2c_futures = p2c_check.map(p2c_ids)
+    [await f.result() for f in p2c_futures]
+    log.info("P2c complete: %d WAVs validated", len(p2c_ids))
 
     # P3: transcribe all target chunks (even if P2 was skipped — transcript may need refresh)
     p3_futures = p3_transcribe.map(all_ids, [language] * len(all_ids))
@@ -133,6 +148,14 @@ async def _run_synthesize(
     # P6: concat (always runs on full episode, not just targets)
     p6_result: P6Result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
     log.info("P6 complete: %s", p6_result.wav_uri)
+
+    # P6v: end-to-end validation gate
+    p6v_result = await p6v_check(
+        episode_id,
+        srt_uri=p6_result.srt_uri,
+        total_duration_s=p6_result.total_duration_s,
+    )
+    log.info("P6v complete: status=%s", p6v_result["status"])
 
     return {
         "mode": "synthesize",
@@ -170,10 +193,17 @@ async def _run_retry_failed(
     failed_ids = [c.id for c in failed]
     log.info("Retrying %d failed chunks", len(failed_ids))
 
-    # Re-run P2→P3→P5 for failed chunks, using episode.config
+    # P1c: input validation for failed chunks
+    p1c_futures = p1c_check.map(failed_ids)
+    [await f.result() for f in p1c_futures]
+
+    # Re-run P2→P2c→P3→P5 for failed chunks, using episode.config
     p2_params = tts_config if tts_config else None
     p2_futures = p2_synth.map(failed_ids, [p2_params] * len(failed_ids))
     [await f.result() for f in p2_futures]
+
+    p2c_futures = p2c_check.map(failed_ids)
+    [await f.result() for f in p2c_futures]
 
     p3_futures = p3_transcribe.map(failed_ids, [language] * len(failed_ids))
     [await f.result() for f in p3_futures]
@@ -184,6 +214,13 @@ async def _run_retry_failed(
     # P6: re-concat full episode
     p6_result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
     log.info("P6 complete after retry: %s", p6_result.wav_uri)
+
+    # P6v: end-to-end validation
+    await p6v_check(
+        episode_id,
+        srt_uri=p6_result.srt_uri,
+        total_duration_s=p6_result.total_duration_s,
+    )
 
     return {"mode": "retry_failed", "retried": len(failed_ids)}
 
@@ -213,9 +250,17 @@ async def _run_regenerate(
     chunk_ids = [c.id for c in p1_result.chunks]
     log.info("P1 regenerated: %d chunks", len(chunk_ids))
 
+    # P1c: input validation
+    p1c_futures = p1c_check.map(chunk_ids)
+    [await f.result() for f in p1c_futures]
+
     p2_params = tts_config if tts_config else None
     p2_futures = p2_synth.map(chunk_ids, [p2_params] * len(chunk_ids))
     [await f.result() for f in p2_futures]
+
+    # P2c: WAV validation
+    p2c_futures = p2c_check.map(chunk_ids)
+    [await f.result() for f in p2c_futures]
 
     p3_futures = p3_transcribe.map(chunk_ids, [language] * len(chunk_ids))
     [await f.result() for f in p3_futures]
@@ -224,6 +269,13 @@ async def _run_regenerate(
     [await f.result() for f in p5_futures]
 
     p6_result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
+
+    # P6v: end-to-end validation
+    await p6v_check(
+        episode_id,
+        srt_uri=p6_result.srt_uri,
+        total_duration_s=p6_result.total_duration_s,
+    )
 
     return {
         "mode": "regenerate",

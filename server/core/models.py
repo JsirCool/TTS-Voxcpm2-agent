@@ -114,6 +114,9 @@ class Chunk(Base):
     last_edited_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    normalized_history: Mapped[list[Any]] = mapped_column(
+        JsonType, nullable=False, default=list, server_default="[]"
+    )
     extra_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JsonType,

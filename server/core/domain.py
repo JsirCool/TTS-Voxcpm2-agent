@@ -27,7 +27,7 @@ from pydantic.alias_generators import to_camel
 
 EpisodeStatus = Literal["empty", "ready", "running", "failed", "done"]
 ChunkStatus = Literal["pending", "synth_done", "transcribed", "failed"]
-StageName = Literal["p1", "p2", "p3", "p5", "p6"]
+StageName = Literal["p1", "p1c", "p2", "p2c", "p2v", "p3", "p5", "p6", "p6v"]
 StageStatus = Literal["pending", "running", "ok", "failed"]
 EventKind = Literal[
     "stage_started",
