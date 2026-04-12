@@ -1,6 +1,7 @@
 "use client";
 
 import type { StageName, StageRun } from "@/lib/types";
+import { STAGE_INFO } from "@/lib/stage-info";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui/sheet";
 
 interface StageContext {
@@ -64,6 +65,30 @@ export function StageLogDrawer({
             <button type="button" className="ml-auto w-7 h-7 inline-flex items-center justify-center rounded hover:bg-neutral-100 text-neutral-500" title="关闭">✕</button>
           </SheetClose>
         </SheetHeader>
+
+        {/* Stage description */}
+        {(() => {
+          const info = STAGE_INFO[stage];
+          return (
+            <details className="border-b border-neutral-200 text-xs shrink-0" open>
+              <summary className="px-4 py-2 bg-neutral-50 cursor-pointer hover:bg-neutral-100 text-neutral-700 font-semibold flex items-center gap-1.5">
+                <span className="text-neutral-400">ℹ</span>
+                <span>{info.title}</span>
+              </summary>
+              <div className="px-4 py-2.5 bg-white text-neutral-700 space-y-1.5">
+                <p className="leading-relaxed">{info.description}</p>
+                <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px] mt-2">
+                  <span className="text-neutral-400">输入</span>
+                  <span className="text-neutral-600">{info.inputs}</span>
+                  <span className="text-neutral-400">输出</span>
+                  <span className="text-neutral-600">{info.outputs}</span>
+                  <span className="text-neutral-400">失败原因</span>
+                  <span className="text-neutral-600">{info.failure}</span>
+                </div>
+              </div>
+            </details>
+          );
+        })()}
 
         {stageRun?.status === "failed" && stageRun.error ? (
           <div className="px-4 py-2 bg-red-50 border-b border-red-200 text-xs text-red-700 shrink-0">
