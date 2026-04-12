@@ -53,7 +53,7 @@ class FakeFishClient:
     """Returns a 1-second silent WAV. Implements the FishTTSClient interface."""
 
     async def synthesize(self, text: str, params: Any = None) -> bytes:
-        return make_silent_wav(1.0)
+        return make_silent_wav(1.0, sample_rate=44100)
 
     async def aclose(self) -> None:
         pass
@@ -125,6 +125,18 @@ def _wire_task_dependencies(storage: MinIOStorage) -> None:
         http_client_factory=_fake_http_client_factory,
         whisperx_url="http://fake-whisperx:7860",
     )
+
+    # P1c (input validation)
+    from server.flows.tasks.p1c_check import configure_p1c_dependencies
+    configure_p1c_dependencies(session_factory=maker)
+
+    # P2c (WAV format check)
+    from server.flows.tasks.p2c_check import configure_p2c_dependencies
+    configure_p2c_dependencies(session_factory=maker, storage=storage)
+
+    # P6v (end-to-end validation)
+    from server.flows.tasks.p6v_check import configure_p6v_dependencies
+    configure_p6v_dependencies(session_factory=maker, storage=storage)
 
     # P5
     from server.flows.tasks.p5_subtitles import configure_p5_dependencies
@@ -329,3 +341,76 @@ async def test_pipeline_p2_failure(storage: MinIOStorage, db_session: AsyncSessi
         failed_events = [e for e in events if e.kind == "stage_failed"]
         assert len(failed_events) >= 1
         assert failed_events[0].payload.get("stage") == "p2"
+
+
+# ---------------------------------------------------------------------------
+# Test: P2 → P2c → P2v full verify path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+async def test_p2_p2c_p2v_path(storage: MinIOStorage, db_session: AsyncSession):
+    """E2E: P2 synth → P2c format check → P2v ASR verify, all pass."""
+    ep_id = e2e_id()
+    # Text ~25 chars (without spaces) to match mock whisperx transcript length
+    script_bytes = make_script_json("P2c-P2v Test", segments=[
+        {"id": 1, "type": "hook", "text": "Hello world this is a test here."},
+    ])
+
+    _wire_task_dependencies(storage)
+    await _create_episode_in_db(ep_id, "P2c-P2v Test", script_bytes, storage)
+
+    maker = _get_maker()
+
+    # --- P1: chunk ---
+    ctx = P1Context(session_maker=maker, storage=storage)
+    p1_result = await _run_p1(ctx, ep_id)
+    assert len(p1_result.chunks) >= 1
+    chunk_ids = [c.id for c in p1_result.chunks]
+
+    # --- P2: synth (mock Fish) ---
+    from server.flows.tasks.p2_synth import run_p2_synth
+    for cid in chunk_ids:
+        await run_p2_synth(cid)
+
+    # Verify synth_done
+    async with maker() as session:
+        for cid in chunk_ids:
+            chunk = await ChunkRepo(session).get(cid)
+            assert chunk is not None
+            assert chunk.status == "synth_done"
+            assert chunk.selected_take_id is not None
+
+    # --- P2c: format check ---
+    from server.flows.tasks.p2c_check import run_p2c_check
+    for cid in chunk_ids:
+        result = await run_p2c_check(cid)
+        # Should pass — FakeFishClient returns valid 44100Hz mono WAV
+        assert result.get("status") != "failed" or result is not None
+
+    # Verify P2c stage_run recorded
+    async with maker() as session:
+        from server.core.repositories import StageRunRepo
+        for cid in chunk_ids:
+            sr = await StageRunRepo(session).get(cid, "p2c")
+            assert sr is not None, f"No stage_run for {cid}/p2c"
+            assert sr.status == "ok", f"P2c failed for {cid}: {sr.error}"
+
+    # --- P2v: ASR verify (mock WhisperX) ---
+    from server.flows.tasks.p2v_verify import run_p2v_verify
+    from server.core.domain import P2vResult
+    for cid in chunk_ids:
+        result = await run_p2v_verify(cid, language="en")
+        assert result.verdict == "pass"
+
+    # Verify chunk status → verified
+    async with maker() as session:
+        for cid in chunk_ids:
+            chunk = await ChunkRepo(session).get(cid)
+            assert chunk is not None
+            assert chunk.status == "verified"
+
+    # Verify transcript exists in MinIO
+    for cid in chunk_ids:
+        key = chunk_transcript_key(ep_id, cid)
+        assert await storage.exists(key)

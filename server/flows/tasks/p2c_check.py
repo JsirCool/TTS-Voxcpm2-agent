@@ -167,10 +167,12 @@ async def run_p2c_check(chunk_id: str) -> dict[str, Any]:
         if not take_id:
             raise DomainError("invalid_state", f"chunk {chunk_id} has no selected take")
 
-        take = await TakeRepo(session).get(take_id)
+        take = await TakeRepo(session).select(take_id)
         if take is None:
             raise DomainError("not_found", f"take not found: {take_id}")
         audio_uri = take.audio_uri
+        # Strip s3://bucket/ prefix to get the MinIO object key
+        audio_key = audio_uri.split("//", 1)[-1].split("/", 1)[-1] if audio_uri.startswith("s3://") else audio_uri
 
         # stage_started
         started_at = datetime.now(timezone.utc)
@@ -194,7 +196,7 @@ async def run_p2c_check(chunk_id: str) -> dict[str, Any]:
     warnings: list[str] = []
 
     try:
-        wav_bytes = await storage.download_bytes(audio_uri)
+        wav_bytes = await storage.download_bytes(audio_key)
     except Exception as exc:
         errors.append(f"WAV file not found: {exc}")
         wav_bytes = None
