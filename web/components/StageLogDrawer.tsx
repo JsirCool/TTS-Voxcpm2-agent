@@ -25,8 +25,7 @@ interface Props {
 }
 
 const STAGE_LABELS: Record<StageName, string> = {
-  p1: "P1", p2: "P2", check2: "CHECK2",
-  p3: "P3", check3: "CHECK3", p5: "P5", p6: "P6",
+  p1: "P1", p2: "P2", p3: "P3", p5: "P5", p6: "P6",
 };
 
 function statusBadge(sr: StageRun | undefined) {

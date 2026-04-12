@@ -12,9 +12,7 @@ interface Props {
 const FULL_LABELS: Record<StageName, string> = {
   p1: "P1",
   p2: "P2",
-  check2: "CHECK2",
   p3: "P3",
-  check3: "CHECK3",
   p5: "P5",
   p6: "P6",
 };
@@ -22,9 +20,7 @@ const FULL_LABELS: Record<StageName, string> = {
 const COMPACT_LABELS: Record<StageName, string> = {
   p1: "P1",
   p2: "P2",
-  check2: "C2",
   p3: "P3",
-  check3: "C3",
   p5: "P5",
   p6: "P6",
 };
