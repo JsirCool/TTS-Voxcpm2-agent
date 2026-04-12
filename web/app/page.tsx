@@ -25,7 +25,7 @@ export default function Page() {
 
   // --- Server state (SWR) ---
   const { data: episodes, mutate: mutateList } = useEpisodes();
-  const { data: episode, mutate: mutateDetail } = useEpisode(store.selectedId);
+  const { data: episode, error: episodeError, mutate: mutateDetail } = useEpisode(store.selectedId);
   const { data: logLines } = useEpisodeLogs(store.selectedId);
 
   // --- Derived ---
@@ -188,7 +188,19 @@ export default function Page() {
               <LogViewer log={logLines ?? []} />
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">Select an episode from the sidebar</div>
+            <div className="flex-1 flex items-center justify-center text-sm text-neutral-400">
+              {episodeError ? (
+                <div className="text-center">
+                  <div className="text-red-500 mb-2">Failed to load episode</div>
+                  <div className="text-xs text-red-400 font-mono max-w-md break-all">{episodeError.message || String(episodeError)}</div>
+                  <button type="button" onClick={() => mutateDetail()} className="mt-3 text-xs px-3 py-1 rounded border border-neutral-300 hover:bg-neutral-100">Retry</button>
+                </div>
+              ) : store.selectedId ? (
+                <div className="text-neutral-400">Loading...</div>
+              ) : (
+                "Select an episode from the sidebar"
+              )}
+            </div>
           )}
         </main>
       </div>
