@@ -13,6 +13,7 @@ const STORAGE_KEY = "tts-harness-logviewer-h";
 export function LogViewer({ log }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(128);
+  const [collapsed, setCollapsed] = useState(false);
   const draggingRef = useRef(false);
 
   // 初始从 localStorage 恢复高度
@@ -67,29 +68,36 @@ export function LogViewer({ log }: Props) {
   return (
     <div
       className="border-t border-neutral-200 bg-neutral-900 text-neutral-200 overflow-hidden flex flex-col shrink-0 relative"
-      style={{ height }}
+      style={{ height: collapsed ? 28 : height }}
     >
-      {/* drag handle: 跨整个上边框,4px 高,光标 ns-resize */}
+      {!collapsed && (
+        <div
+          onMouseDown={startDrag}
+          className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-blue-500/60 active:bg-blue-500/80 z-10"
+          title="拖拽调整日志面板高度"
+        />
+      )}
       <div
-        onMouseDown={startDrag}
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-blue-500/60 active:bg-blue-500/80 z-10"
-        title="拖拽调整日志面板高度"
-      />
-      <div className="px-4 py-1 border-b border-neutral-800 flex items-center text-[11px] text-neutral-400 select-none">
+        className="px-4 py-1 border-b border-neutral-800 flex items-center text-[11px] text-neutral-400 select-none cursor-pointer hover:bg-neutral-800/50"
+        onClick={() => setCollapsed((c) => !c)}
+      >
+        <span className="mr-1.5">{collapsed ? "▸" : "▾"}</span>
         <span className="uppercase tracking-wide">run.log</span>
         <span className="ml-3 text-neutral-500">{log.length} lines</span>
-        <span className="ml-auto font-mono">tail -f</span>
+        <span className="ml-auto font-mono">{collapsed ? "展开" : "tail -f"}</span>
       </div>
-      <div
-        ref={ref}
-        className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-relaxed"
-      >
-        {log.length === 0 ? (
-          <div className="text-neutral-500 italic">无日志</div>
-        ) : (
-          log.map((line, i) => <div key={i}>{line}</div>)
-        )}
-      </div>
+      {!collapsed && (
+        <div
+          ref={ref}
+          className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-relaxed"
+        >
+          {log.length === 0 ? (
+            <div className="text-neutral-500 italic">无日志</div>
+          ) : (
+            log.map((line, i) => <div key={i}>{line}</div>)
+          )}
+        </div>
+      )}
     </div>
   );
 }
