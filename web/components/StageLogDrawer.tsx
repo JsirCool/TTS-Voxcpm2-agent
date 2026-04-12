@@ -117,7 +117,7 @@ export function StageLogDrawer({
                     {stageRun.startedAt && <tr><td className="py-1 text-neutral-400">Started</td><td className="py-1 font-mono">{stageRun.startedAt}</td></tr>}
                     {stageRun.finishedAt && <tr><td className="py-1 text-neutral-400">Finished</td><td className="py-1 font-mono">{stageRun.finishedAt}</td></tr>}
                     {stageRun.durationMs != null && <tr><td className="py-1 text-neutral-400">Duration</td><td className="py-1 font-mono">{stageRun.durationMs}ms</td></tr>}
-                    {stageRun.error && <tr><td className="py-1 text-neutral-400">Error</td><td className="py-1 font-mono text-red-600 whitespace-pre-wrap">{stageRun.error}</td></tr>}
+                    {/* Error already shown in the red banner above — no duplicate here */}
                     {stageRun.stale && <tr><td className="py-1 text-neutral-400">Stale</td><td className="py-1 text-amber-600">上游已更新</td></tr>}
                   </tbody>
                 </table>
