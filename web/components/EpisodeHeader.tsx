@@ -74,8 +74,8 @@ export function EpisodeHeader({ episode, running, onRun, failedCount = 0 }: Prop
           {primaryButton.label}
         </button>
 
-        {/* Menu for secondary actions (done state: regenerate) */}
-        {episode.status === "done" && !running && (
+        {/* Menu for secondary actions */}
+        {(episode.status === "done" || episode.status === "failed") && !running && (
           <div className="relative">
             <button
               type="button"
@@ -86,6 +86,15 @@ export function EpisodeHeader({ episode, running, onRun, failedCount = 0 }: Prop
             </button>
             {menuOpen && (
               <div className="absolute left-0 top-full mt-1 w-44 bg-white border border-neutral-200 rounded-md shadow-lg z-30">
+                {episode.status === "failed" && (
+                  <button
+                    type="button"
+                    onClick={() => { setMenuOpen(false); onRun("synthesize"); }}
+                    className="w-full text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-50 rounded-t-md"
+                  >
+                    合成全部（跳过已完成）
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -94,7 +103,7 @@ export function EpisodeHeader({ episode, running, onRun, failedCount = 0 }: Prop
                       onRun("regenerate");
                     }
                   }}
-                  className="w-full text-left px-3 py-2 text-xs text-red-600 hover:bg-red-50 rounded-md"
+                  className="w-full text-left px-3 py-2 text-xs text-red-600 hover:bg-red-50 rounded-b-md"
                 >
                   重新生成（清空重来）
                 </button>
