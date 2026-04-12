@@ -492,9 +492,20 @@ async def run_episode(
                             },
                         })
                     except Exception as e:
-                        await _mark_stage(cid, "p2", "failed", error=str(e), started=t0, context={
+                        err_msg = f"{type(e).__name__}: {e}"
+                        _log.error("P2 failed %s: %s", cid, err_msg)
+                        await _mark_stage(cid, "p2", "failed", error=err_msg, started=t0, context={
                             "request": {"text": _text[:100], **(p2_params if isinstance(p2_params, dict) else {})},
                         })
+                        # Double-write: ensure StageRun.error is persisted even if
+                        # the P2 task's internal upsert ran without the error field.
+                        try:
+                            async with _session_factory() as _es:
+                                from server.core.repositories import StageRunRepo as _SR
+                                await _SR(_es).upsert(chunk_id=cid, stage="p2", status="failed", error=err_msg)
+                                await _es.commit()
+                        except Exception:
+                            pass
                         raise
 
                 # P3: transcribe
