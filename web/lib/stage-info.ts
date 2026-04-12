@@ -44,13 +44,6 @@ export const STAGE_INFO: Record<StageName, StageInfo> = {
     outputs: "transcript.json（MinIO）+ 质量评分",
     failure: "ASR 转写失败 / 内容偏差超阈值",
   },
-  p3: {
-    title: "P3 · WhisperX 转写",
-    description: "将合成的 WAV 音频发送到 WhisperX 服务，获取 word-level 时间戳的 transcript。用于后续字幕生成。",
-    inputs: "take WAV 音频（MinIO）",
-    outputs: "transcript.json（MinIO）— 含每个字的 start/end/score",
-    failure: "WhisperX 服务不可用 / 音频格式不支持 / 空 transcript",
-  },
   p5: {
     title: "P5 · 字幕生成",
     description: "根据 transcript 的 word 时间戳，按字符数加权分配时间，生成 SRT 格式字幕文件。字幕来源优先用 subtitleText，否则用 text（去掉控制标记）。",

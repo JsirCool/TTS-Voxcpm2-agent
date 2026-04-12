@@ -18,7 +18,7 @@ export type TakeId = string;
 // ===== Enums =====
 export type EpisodeStatus = "empty" | "ready" | "running" | "failed" | "done";
 export type ChunkStatus = "pending" | "synth_done" | "verified" | "needs_review" | "failed";
-export type StageName = "p1" | "p1c" | "p2" | "p2c" | "p2v" | "p3" | "p5" | "p6" | "p6v";
+export type StageName = "p1" | "p1c" | "p2" | "p2c" | "p2v" | "p5" | "p6" | "p6v";
 export type StageStatus = "pending" | "running" | "ok" | "failed";
 
 // ===== Stage Run (backend: StageRunView) =====
@@ -158,7 +158,6 @@ export const STAGE_ORDER: readonly StageName[] = [
   "p2",
   "p2c",
   "p2v",
-  "p3",
   "p5",
   "p6",
   "p6v",

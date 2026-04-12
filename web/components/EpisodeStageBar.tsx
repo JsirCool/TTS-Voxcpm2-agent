@@ -8,7 +8,7 @@ interface Props {
 }
 
 /** Stages to display at episode level (skip p1/p6 — they're episode-scoped, not per-chunk). */
-const CHUNK_STAGES: StageName[] = ["p2", "p2c", "p2v", "p3", "p5"];
+const CHUNK_STAGES: StageName[] = ["p2", "p2c", "p2v", "p5"];
 
 const GATE_STAGES = new Set<StageName>(["p1c", "p2c", "p2v", "p6v"]);
 
