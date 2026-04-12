@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Episode, EpisodeStatus } from "@/lib/types";
+import { getApiUrl } from "@/lib/api-client";
 
 interface Props {
   episode: Episode;
@@ -86,11 +87,21 @@ export function EpisodeHeader({ episode, running, onRun, failedCount = 0 }: Prop
             </button>
             {menuOpen && (
               <div className="absolute left-0 top-full mt-1 w-44 bg-white border border-neutral-200 rounded-md shadow-lg z-30">
+                {episode.status === "done" && (
+                  <a
+                    href={`${getApiUrl()}/episodes/${episode.id}/export`}
+                    download
+                    onClick={() => setMenuOpen(false)}
+                    className="block w-full text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-50 rounded-t-md"
+                  >
+                    导出产物 (zip)
+                  </a>
+                )}
                 {episode.status === "failed" && (
                   <button
                     type="button"
                     onClick={() => { setMenuOpen(false); onRun("synthesize"); }}
-                    className="w-full text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-50 rounded-t-md"
+                    className="w-full text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-50"
                   >
                     合成全部（跳过已完成）
                   </button>
