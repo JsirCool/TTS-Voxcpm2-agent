@@ -100,6 +100,29 @@ def bootstrap() -> None:
         whisperx_url=whisperx_url,
     )
 
+    # Wire P1c (input validation).
+    from server.flows.tasks.p1c_check import configure_p1c_dependencies
+
+    configure_p1c_dependencies(
+        session_factory=_session_factory,
+    )
+
+    # Wire P2c (WAV format check).
+    from server.flows.tasks.p2c_check import configure_p2c_dependencies
+
+    configure_p2c_dependencies(
+        session_factory=_session_factory,
+        storage=_storage,
+    )
+
+    # Wire P6v (end-to-end validation).
+    from server.flows.tasks.p6v_check import configure_p6v_dependencies
+
+    configure_p6v_dependencies(
+        session_factory=_session_factory,
+        storage=_storage,
+    )
+
     # Wire P5.
     from server.flows.tasks.p5_subtitles import configure_p5_dependencies
 
