@@ -244,7 +244,7 @@ export function ChunkRow({
             key={audioUrl}
             ref={audioRef}
             src={audioUrl}
-            preload="none"
+            preload="metadata"
             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
             onEnded={() => {
               setCurrentTime(0);
