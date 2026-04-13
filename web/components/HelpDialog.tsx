@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { CHUNK_STAGE_ORDER } from "@/lib/types";
+import { STAGE_INFO } from "@/lib/stage-info";
 
 interface Props {
   open: boolean;
@@ -174,17 +176,18 @@ export function HelpDialog({ open, onClose }: Props) {
               Per-chunk Pipeline
             </h3>
             <p className="mb-2 text-neutral-600">
-              每个 chunk 行下方的 5 个 pill 表示：
-              <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">P2</span>
-              (TTS 合成) →
-              <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">C2</span>
-              (WAV 校验) →
-              <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">P3</span>
-              (转写) →
-              <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">C3</span>
-              (字符比校验) →
-              <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">P5</span>
-              (字幕)
+              每个 chunk 行下方的 {CHUNK_STAGE_ORDER.length} 个 pill 表示：
+              {CHUNK_STAGE_ORDER.map((stage, i) => {
+                const info = STAGE_INFO[stage];
+                const label = info.title.split(" · ")[0]; // e.g. "P2"
+                return (
+                  <span key={stage}>
+                    <span className="inline-block mx-1 px-1.5 rounded bg-emerald-500 text-white text-[10px] font-mono">{label}</span>
+                    ({info.description.split("，")[0]})
+                    {i < CHUNK_STAGE_ORDER.length - 1 && " →"}
+                  </span>
+                );
+              })}
             </p>
             <ul className="text-xs space-y-1 text-neutral-700 mt-2">
               <li>
