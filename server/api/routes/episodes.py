@@ -1074,6 +1074,33 @@ async def get_episode_logs(
 
 
 # ---------------------------------------------------------------------------
+# GET /episodes/{id}/script — preview or download the original script.json
+# ---------------------------------------------------------------------------
+
+
+@router.get("/episodes/{episode_id}/script")
+async def get_episode_script(
+    episode_id: str,
+    session: AsyncSession = Depends(get_session),
+    storage: MinIOStorage = Depends(get_storage),
+):
+    """Return the original script.json for this episode."""
+    repo = EpisodeRepo(session)
+    ep = await repo.get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+
+    key = episode_script_key(episode_id)
+    try:
+        data = await storage.download_bytes(key)
+    except Exception:
+        raise DomainError("not_found", f"script not found for episode '{episode_id}'")
+
+    import json as _json
+    return _json.loads(data)
+
+
+# ---------------------------------------------------------------------------
 # GET /episodes/{id}/export — download production assets as zip
 # ---------------------------------------------------------------------------
 
@@ -1087,20 +1114,30 @@ async def export_episode(
 ):
     """Export episode production assets as a zip file.
 
-    format=shots (default):
+    Produces Remotion-compatible output:
       {episode_id}/
         shot01.wav, shot02.wav, ...
-        subtitles.json
-        durations.json
+        subtitles.json   — {shot_id: [{id, text, start, end}]} with shot-level offsets
+        durations.json   — [{id, duration_s, file}]
     """
     import io
     import json
     import tempfile
+    import wave
     import zipfile
     from collections import defaultdict
     from pathlib import Path
 
     from fastapi.responses import StreamingResponse
+
+    from server.core.p6_logic import (
+        ChunkTiming,
+        compute_chunk_offsets,
+        generate_silence,
+        parse_srt,
+        sort_chunk_timings,
+    )
+    from server.core.storage import chunk_subtitle_key, chunk_take_key
 
     repo = EpisodeRepo(session)
     ep = await repo.get(episode_id)
@@ -1111,32 +1148,52 @@ async def export_episode(
     take_repo = TakeRepo(session)
     chunks = await chunk_repo.list_by_episode(episode_id)
 
-    # Group chunks by shot, ordered by idx
-    shots: dict[str, list] = defaultdict(list)
+    # Build sorted list with takes
+    items_by_shot: dict[str, list] = defaultdict(list)
     for c in sorted(chunks, key=lambda c: (c.shot_id, c.idx)):
         if c.selected_take_id and c.status in ("verified", "synth_done"):
             take = await take_repo.select(c.selected_take_id)
             if take:
-                shots[c.shot_id].append({"chunk": c, "take": take})
+                items_by_shot[c.shot_id].append({"chunk": c, "take": take})
 
-    if not shots:
+    if not items_by_shot:
         raise DomainError("invalid_state", "no verified chunks to export")
 
-    # Build zip in memory
+    # P6 constants (must match p6_concat.py defaults)
+    PADDING_S = 0.2
+    SHOT_GAP_S = 0.5
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         durations = []
         all_subtitles: dict[str, list] = {}
 
-        for shot_id, items in shots.items():
-            # Concat chunk WAVs for this shot using ffmpeg
+        for shot_id, items in items_by_shot.items():
+            # Build ChunkTimings for offset calculation within this shot
+            timings = sort_chunk_timings([
+                ChunkTiming(
+                    chunk_id=item["chunk"].id,
+                    shot_id=shot_id,
+                    idx=item["chunk"].idx,
+                    duration_s=float(item["take"].duration_s or 0.0),
+                )
+                for item in items
+            ])
+
+            # Compute per-chunk offsets within this shot (same-shot padding only)
+            offsets = compute_chunk_offsets(timings, PADDING_S, SHOT_GAP_S)
+
+            # --- Build per-shot WAV with padding ---
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
-                chunk_paths = []
+                concat_entries: list[Path] = []
 
-                for i, item in enumerate(items):
+                # Generate silence files
+                sil_padding = tmp_path / "sil_padding.wav"
+                await generate_silence(sil_padding, PADDING_S)
+
+                for i, (timing, item) in enumerate(zip(timings, items)):
                     take = item["take"]
-                    # Strip s3:// prefix
                     audio_key = take.audio_uri.split("//", 1)[-1].split("/", 1)[-1] if take.audio_uri.startswith("s3://") else take.audio_uri
                     try:
                         wav_bytes = await storage.download_bytes(audio_key)
@@ -1144,23 +1201,26 @@ async def export_episode(
                         continue
                     chunk_wav = tmp_path / f"chunk_{i:03d}.wav"
                     chunk_wav.write_bytes(wav_bytes)
-                    chunk_paths.append(chunk_wav)
 
-                if not chunk_paths:
+                    if i > 0:
+                        concat_entries.append(sil_padding)
+                    concat_entries.append(chunk_wav)
+
+                if not concat_entries:
                     continue
 
-                # Simple concat with ffmpeg
-                if len(chunk_paths) == 1:
-                    shot_wav_bytes = chunk_paths[0].read_bytes()
+                if len(concat_entries) == 1:
+                    shot_wav_bytes = concat_entries[0].read_bytes()
                 else:
                     concat_list = tmp_path / "concat.txt"
                     concat_list.write_text(
-                        "\n".join(f"file '{p.name}'" for p in chunk_paths)
+                        "\n".join(f"file '{p.resolve()}'" for p in concat_entries)
                     )
                     shot_wav = tmp_path / f"{shot_id}.wav"
                     import subprocess
                     proc = subprocess.run(
-                        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                         "-f", "concat", "-safe", "0",
                          "-i", str(concat_list), "-c", "copy", str(shot_wav)],
                         capture_output=True, timeout=30,
                     )
@@ -1170,14 +1230,13 @@ async def export_episode(
 
                 zf.writestr(f"{episode_id}/{shot_id}.wav", shot_wav_bytes)
 
-                # Duration from ffprobe
-                import struct, wave
+                # Duration from WAV header
                 try:
                     with io.BytesIO(shot_wav_bytes) as wio:
                         with wave.open(wio) as wf:
                             dur = wf.getnframes() / wf.getframerate()
                 except Exception:
-                    dur = sum(item["take"].duration_s for item in items)
+                    dur = sum(float(item["take"].duration_s) for item in items)
 
                 durations.append({
                     "id": shot_id,
@@ -1185,20 +1244,28 @@ async def export_episode(
                     "file": f"{shot_id}.wav",
                 })
 
-            # Collect subtitles for this shot
+            # --- Build Remotion-format subtitles with offsets ---
             shot_subs = []
-            for item in items:
-                c = item["chunk"]
-                sub_key = f"episodes/{episode_id}/chunks/{c.id}/subtitle.srt"
+            sub_counter = len([s for subs in all_subtitles.values() for s in subs])
+            for timing, offset in zip(timings, offsets):
+                sub_key = chunk_subtitle_key(episode_id, timing.chunk_id)
                 try:
                     srt_bytes = await storage.download_bytes(sub_key)
-                    shot_subs.append({"chunk_id": c.id, "srt": srt_bytes.decode("utf-8")})
+                    cues = parse_srt(srt_bytes.decode("utf-8"))
                 except Exception:
-                    pass
+                    continue
+                for cue in cues:
+                    sub_counter += 1
+                    shot_subs.append({
+                        "id": f"sub_{sub_counter:03d}",
+                        "text": cue.text,
+                        "start": round(cue.start_s + offset, 3),
+                        "end": round(cue.end_s + offset, 3),
+                    })
             if shot_subs:
                 all_subtitles[shot_id] = shot_subs
 
-        # Write subtitles.json
+        # Write subtitles.json (Remotion format)
         zf.writestr(f"{episode_id}/subtitles.json", json.dumps(all_subtitles, ensure_ascii=False, indent=2))
 
         # Write durations.json
