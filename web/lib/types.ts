@@ -154,10 +154,6 @@ export function getStageRun(
   return stageRuns.find((sr) => sr.stage === stage);
 }
 
-export function hasLog(stageRun: StageRun | undefined): boolean {
-  return stageRun?.logUri != null;
-}
-
 export const STAGE_ORDER: readonly StageName[] = [
   "p1",
   "p1c",

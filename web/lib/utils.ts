@@ -28,8 +28,3 @@ export function getDisplaySubtitle(c: {
   if (c.subtitleText != null) return stripControlMarkers(c.subtitleText);
   return stripControlMarkers(c.text);
 }
-
-export function fmtDuration(s: number): string {
-  if (!s || s <= 0) return "—";
-  return `${s.toFixed(1)}s`;
-}
