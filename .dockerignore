@@ -1,0 +1,15 @@
+node_modules
+.venv
+.venv-server
+.work
+.claude
+.git
+_archive
+test-results
+web/test-results
+web/playwright-report
+web/node_modules
+web/vitest.config.ts
+web/e2e
+*.wav
+*.mp3
