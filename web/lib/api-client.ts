@@ -14,11 +14,15 @@ const API_URL =
 
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
 
-/** Read the Fish API key from localStorage (browser only). */
-function getFishKeyHeader(): Record<string, string> {
+/** Read API keys from localStorage (browser only). */
+function getApiKeyHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
-  const key = window.localStorage.getItem("fish-api-key");
-  return key ? { "X-Fish-Key": key } : {};
+  const headers: Record<string, string> = {};
+  const fishKey = window.localStorage.getItem("fish-api-key");
+  if (fishKey) headers["X-Fish-Key"] = fishKey;
+  const groqKey = window.localStorage.getItem("groq-api-key");
+  if (groqKey) headers["X-Groq-Key"] = groqKey;
+  return headers;
 }
 
 export const api = createClient<paths>({
@@ -26,10 +30,10 @@ export const api = createClient<paths>({
   headers: API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {},
 });
 
-// Inject X-Fish-Key and handle auth errors via middleware
+// Inject API key headers and handle auth errors via middleware
 api.use({
   async onRequest({ request }) {
-    const headers = getFishKeyHeader();
+    const headers = getApiKeyHeaders();
     for (const [k, v] of Object.entries(headers)) {
       request.headers.set(k, v);
     }
