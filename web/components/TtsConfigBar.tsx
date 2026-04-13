@@ -162,26 +162,26 @@ function ConfigForm({
 
       <div className="px-5 py-4 space-y-3 text-sm">
         <div>
-          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Model <HelpTip>Fish Audio 模型。s2-pro（推荐）或 s2。</HelpTip></label>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Model <HelpTip>Fish Audio 的模型版本。当前支持 s2-pro（推荐）和 s2。</HelpTip></label>
           <select value={form.model} onChange={(e) => set("model", e.target.value)} className={inputClass}>
             <option value="s2-pro">s2-pro</option>
             <option value="s2">s2</option>
           </select>
         </div>
         <div>
-          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Temperature <HelpTip>控制随机性。0=确定性，1=随机。推荐 0.5-0.8。</HelpTip></label>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Temperature <HelpTip>控制随机性。0 = 最确定性，1 = 最随机。推荐 0.5-0.8。值越低发音越稳定但可能偏机械。</HelpTip></label>
           <input type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => set("temperature", e.target.value)} className={inputClass} />
         </div>
         <div>
-          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Top P <HelpTip>核采样参数。推荐 0.5-0.8。</HelpTip></label>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Top P <HelpTip>核采样参数。与 temperature 配合使用。推荐 0.5-0.8。</HelpTip></label>
           <input type="number" step="0.1" min="0" max="1" value={form.top_p} onChange={(e) => set("top_p", e.target.value)} className={inputClass} />
         </div>
         <div>
-          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Speed <HelpTip>语速。1.0=正常，1.15=略快。范围 0.5-2.0。</HelpTip></label>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Speed <HelpTip>语速倍率。1.0 = 正常速度，1.15 = 略快。范围 0.5-2.0。</HelpTip></label>
           <input type="number" step="0.05" min="0.5" max="2" value={form.speed} onChange={(e) => set("speed", e.target.value)} className={inputClass} />
         </div>
         <div>
-          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Reference ID <HelpTip>Fish Audio 声音克隆 ID。留空用默认。</HelpTip></label>
+          <label className="text-xs text-neutral-600 flex items-center gap-1 mb-1">Reference ID <HelpTip>Fish Audio 声音克隆 ID。留空则用默认声音。在 Fish Audio 平台创建并获取 ID。</HelpTip></label>
           <input type="text" value={form.reference_id} onChange={(e) => set("reference_id", e.target.value)} className={inputClass} placeholder="留空使用默认声音" />
         </div>
       </div>
