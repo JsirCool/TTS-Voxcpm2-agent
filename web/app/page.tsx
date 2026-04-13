@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useState, useMemo } from "react";
+import { useEffect, useCallback, useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import type { Episode, StageName } from "@/lib/types";
@@ -165,13 +165,6 @@ export default function Page() {
                     <ChunksTable
                       episodeId={episode.id}
                       chunks={episode.chunks}
-                      edits={store.edits}
-                      editing={store.editing}
-                      playingChunkId={store.playingChunkId}
-                      onPlay={store.togglePlay}
-                      onEdit={store.startEditing}
-                      onCancelEdit={store.cancelEditing}
-                      onStage={store.stageEdit}
                       onStageClick={(cid, stage) => store.openDrawer(cid, stage)}
                       onPreviewTake={(_cid, takeId) => {
                         const chunk = episode.chunks.find(c => c.takes.find(t => t.id === takeId));

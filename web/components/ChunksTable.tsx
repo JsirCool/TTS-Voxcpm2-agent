@@ -1,22 +1,16 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { memo, useCallback, useRef, useState } from "react";
+import type { Chunk, StageName } from "@/lib/types";
+import { useHarnessStore } from "@/lib/store";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Chunk, ChunkEdit, EditBatch, StageName } from "@/lib/types";
-import { ChunkRow, type DirtyType, type DisplayMode } from "./ChunkRow";
+import { ChunkRow, type DisplayMode } from "./ChunkRow";
 import { ChunkEditor } from "./ChunkEditor";
 import { GRID_COLS } from "./chunks-grid";
 
 interface Props {
   episodeId: string;
   chunks: Chunk[];
-  edits: EditBatch;
-  editing: string | null;
-  playingChunkId: string | null;
-  onPlay: (cid: string) => void;
-  onEdit: (cid: string) => void;
-  onCancelEdit: () => void;
-  onStage: (cid: string, draft: ChunkEdit) => void;
   onStageClick?: (cid: string, stage: StageName) => void;
   onPreviewTake?: (cid: string, takeId: string) => void;
   onUseTake?: (cid: string, takeId: string) => void;
@@ -25,26 +19,9 @@ interface Props {
   getAudioUrl: (uri: string) => string;
 }
 
-function computeDirty(edit: ChunkEdit | undefined): DirtyType {
-  if (!edit) return null;
-  const hasTts = edit.textNormalized !== undefined;
-  const hasSub = edit.subtitleText !== undefined;
-  if (hasTts && hasSub) return "both";
-  if (hasTts) return "tts";
-  if (hasSub) return "subtitle";
-  return null;
-}
-
 export function ChunksTable({
   episodeId,
   chunks,
-  edits,
-  editing,
-  playingChunkId,
-  onPlay,
-  onEdit,
-  onCancelEdit,
-  onStage,
   onStageClick,
   onPreviewTake,
   onUseTake,
@@ -52,8 +29,10 @@ export function ChunksTable({
   synthesizingCid,
   getAudioUrl,
 }: Props) {
+  void episodeId;
   const [displayMode, setDisplayMode] = useState<DisplayMode>("subtitle");
   const parentRef = useRef<HTMLDivElement>(null);
+  const editing = useHarnessStore((s) => s.editing);
 
   const virtualizer = useVirtualizer({
     count: chunks.length,
@@ -61,7 +40,6 @@ export function ChunksTable({
     estimateSize: useCallback(
       (index: number) => {
         const c = chunks[index];
-        // Expanded editor rows are taller
         if (editing === c?.id) return 320;
         return 60;
       },
@@ -132,9 +110,6 @@ export function ChunksTable({
         >
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const c = chunks[virtualRow.index];
-            const isEditing = editing === c.id;
-            const edit = edits[c.id];
-            const dirty = computeDirty(edit);
             return (
               <div
                 key={c.id}
@@ -149,17 +124,8 @@ export function ChunksTable({
                 }}
               >
                 <RowGroup
-                  episodeId={episodeId}
                   chunk={c}
                   displayMode={displayMode}
-                  isEditing={isEditing}
-                  isPlaying={playingChunkId === c.id}
-                  dirty={dirty}
-                  edit={edit}
-                  onPlay={() => onPlay(c.id)}
-                  onEdit={() => onEdit(c.id)}
-                  onCancelEdit={onCancelEdit}
-                  onStage={(draft) => onStage(c.id, draft)}
                   onStageClick={onStageClick ? (stage) => onStageClick(c.id, stage) : undefined}
                   onPreviewTake={onPreviewTake ? (takeId) => onPreviewTake(c.id, takeId) : undefined}
                   onUseTake={onUseTake ? (takeId) => onUseTake(c.id, takeId) : undefined}
@@ -177,17 +143,8 @@ export function ChunksTable({
 }
 
 interface RowGroupProps {
-  episodeId: string;
   chunk: Chunk;
   displayMode: DisplayMode;
-  isEditing: boolean;
-  isPlaying: boolean;
-  dirty: DirtyType;
-  edit: ChunkEdit | undefined;
-  onPlay: () => void;
-  onEdit: () => void;
-  onCancelEdit: () => void;
-  onStage: (draft: ChunkEdit) => void;
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
@@ -196,18 +153,9 @@ interface RowGroupProps {
   getAudioUrl: (uri: string) => string;
 }
 
-function RowGroup({
-  episodeId,
+const RowGroup = memo(function RowGroup({
   chunk,
   displayMode,
-  isEditing,
-  isPlaying,
-  dirty,
-  edit,
-  onPlay,
-  onEdit,
-  onCancelEdit,
-  onStage,
   onStageClick,
   onPreviewTake,
   onUseTake,
@@ -215,19 +163,16 @@ function RowGroup({
   synthesizing,
   getAudioUrl,
 }: RowGroupProps) {
+  const isEditing = useHarnessStore((s) => s.editing === chunk.id);
+  const edit = useHarnessStore((s) => s.edits[chunk.id]);
+  const stageEdit = useHarnessStore((s) => s.stageEdit);
+  const cancelEditing = useHarnessStore((s) => s.cancelEditing);
+
   return (
     <>
       <ChunkRow
-        episodeId={episodeId}
         chunk={chunk}
         displayMode={displayMode}
-        isPlaying={isPlaying}
-        isEditing={isEditing}
-        dirty={dirty}
-        edit={edit}
-        onPlay={onPlay}
-        onEdit={onEdit}
-        onCancelEdit={onCancelEdit}
         onStageClick={onStageClick}
         onPreviewTake={onPreviewTake}
         onUseTake={onUseTake}
@@ -239,10 +184,19 @@ function RowGroup({
         <ChunkEditor
           chunk={chunk}
           initialDraft={edit}
-          onStage={onStage}
-          onCancel={onCancelEdit}
+          onStage={(draft) => stageEdit(chunk.id, draft)}
+          onCancel={cancelEditing}
         />
       ) : null}
     </>
   );
-}
+}, (prev, next) => {
+  return prev.chunk === next.chunk
+    && prev.displayMode === next.displayMode
+    && prev.synthesizing === next.synthesizing
+    && prev.onStageClick === next.onStageClick
+    && prev.onPreviewTake === next.onPreviewTake
+    && prev.onUseTake === next.onUseTake
+    && prev.onSynthesize === next.onSynthesize
+    && prev.getAudioUrl === next.getAudioUrl;
+});

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { Chunk, ChunkEdit, ChunkStatus, StageName } from "@/lib/types";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
-// getAudioUrl passed via props — component must not import hooks
+import { useHarnessStore } from "@/lib/store";
 import { KaraokeSubtitle } from "./KaraokeSubtitle";
 import { RetryRow } from "./RetryRow";
 import { StagePipeline } from "./StagePipeline";
@@ -14,22 +14,24 @@ export type DirtyType = null | "tts" | "subtitle" | "both";
 export type DisplayMode = "subtitle" | "tts";
 
 interface Props {
-  episodeId: string;
   chunk: Chunk;
   displayMode: DisplayMode;
-  isPlaying: boolean;
-  isEditing: boolean;
-  dirty: DirtyType;
-  edit?: ChunkEdit;
-  onPlay: () => void;
-  onEdit: () => void;
-  onCancelEdit: () => void;
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
   synthesizing?: boolean;
   getAudioUrl: (uri: string) => string;
+}
+
+function computeDirty(edit: ChunkEdit | undefined): DirtyType {
+  if (!edit) return null;
+  const hasTts = edit.textNormalized !== undefined;
+  const hasSub = edit.subtitleText !== undefined;
+  if (hasTts && hasSub) return "both";
+  if (hasTts) return "tts";
+  if (hasSub) return "subtitle";
+  return null;
 }
 
 function statusIcon(status: ChunkStatus) {
@@ -49,17 +51,9 @@ function statusIcon(status: ChunkStatus) {
   }
 }
 
-export function ChunkRow({
-  episodeId,
+export const ChunkRow = memo(function ChunkRow({
   chunk,
   displayMode,
-  isPlaying,
-  isEditing,
-  dirty,
-  edit,
-  onPlay,
-  onEdit,
-  onCancelEdit,
   onStageClick,
   onPreviewTake,
   onUseTake,
@@ -67,11 +61,22 @@ export function ChunkRow({
   synthesizing = false,
   getAudioUrl,
 }: Props) {
-  void episodeId; // kept for future use
+  // --- Zustand selectors (fine-grained, auto shallow-compare) ---
+  const isPlaying = useHarnessStore((s) => s.playingChunkId === chunk.id);
+  const isEditing = useHarnessStore((s) => s.editing === chunk.id);
+  const edit = useHarnessStore((s) => s.edits[chunk.id]);
+  const togglePlay = useHarnessStore((s) => s.togglePlay);
+  const startEditing = useHarnessStore((s) => s.startEditing);
+  const cancelEditing = useHarnessStore((s) => s.cancelEditing);
+
+  const dirty = computeDirty(edit);
   const isDirty = dirty !== null;
   const hasSubField = chunk.subtitleText != null;
   const audioRef = useRef<HTMLAudioElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
+
+  const onPlay = () => togglePlay(chunk.id);
+  const onEdit = () => startEditing(chunk.id);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -276,7 +281,7 @@ export function ChunkRow({
       <div className="py-2.5 pr-6 self-start text-right">
         <button
           type="button"
-          onClick={isEditing ? onCancelEdit : onEdit}
+          onClick={isEditing ? cancelEditing : onEdit}
           title={isEditing ? "Close edit" : "Edit"}
           className={`w-7 h-7 inline-flex items-center justify-center rounded ${
             isEditing
@@ -289,4 +294,15 @@ export function ChunkRow({
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  // Zustand selector handles isPlaying/isEditing/edit re-renders automatically.
+  // We only need to compare the props we receive.
+  return prev.chunk === next.chunk
+    && prev.displayMode === next.displayMode
+    && prev.synthesizing === next.synthesizing
+    && prev.onStageClick === next.onStageClick
+    && prev.onPreviewTake === next.onPreviewTake
+    && prev.onUseTake === next.onUseTake
+    && prev.onSynthesize === next.onSynthesize
+    && prev.getAudioUrl === next.getAudioUrl;
+});
