@@ -33,10 +33,7 @@ function diagnosisSummary(attempt: AttemptRecord): string | null {
   if (!d) return null;
   const parts: string[] = [];
   if (d.type) parts.push(d.type);
-  if (d.missing?.length) parts.push(`missing: ${d.missing.join(", ")}`);
-  if (d.extra?.length) parts.push(`extra: ${d.extra.join(", ")}`);
-  if (d.lowConfidenceWords?.length)
-    parts.push(`low-conf: ${d.lowConfidenceWords.join(", ")}`);
+  if (d.detail) parts.push(d.detail);
   return parts.length > 0 ? parts.join(" | ") : null;
 }
 

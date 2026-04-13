@@ -1,8 +1,9 @@
 "use client";
 
-import type { StageName, StageRun } from "@/lib/types";
+import type { StageName, StageRun, VerifyScores } from "@/lib/types";
 import { STAGE_INFO } from "@/lib/stage-info";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose } from "@/components/ui/sheet";
+import { VerifyScoreBar } from "./VerifyScoreBar";
 
 interface StageContext {
   request?: Record<string, unknown>;
@@ -101,6 +102,30 @@ export function StageLogDrawer({
             </div>
           </div>
         ) : null}
+
+        {/* P2v verify result summary */}
+        {stage === "p2v" && context?.response && (() => {
+          const resp = context.response as Record<string, unknown>;
+          const scores = resp.scores as VerifyScores | undefined;
+          const diagnosis = resp.diagnosis as { verdict?: string; type?: string; detail?: string } | undefined;
+          if (!scores) return null;
+          const pass = scores.weightedScore >= 0.7;
+          return (
+            <div className={`px-4 py-2.5 border-b text-xs shrink-0 ${pass ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800" : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800"}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="font-semibold text-neutral-700 dark:text-neutral-300">Verify 结果</span>
+                <span className="font-mono font-bold text-neutral-600 dark:text-neutral-300">{scores.weightedScore.toFixed(2)}</span>
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${pass ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" : "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"}`}>
+                  {pass ? "PASS" : "FAIL"}
+                </span>
+              </div>
+              {diagnosis?.detail && (
+                <div className="text-[11px] text-neutral-600 dark:text-neutral-400 mb-2">{diagnosis.detail}</div>
+              )}
+              <VerifyScoreBar scores={scores} />
+            </div>
+          );
+        })()}
 
         {logLoading ? (
           <div className="flex-1 flex items-center justify-center text-xs text-neutral-400">加载日志中…</div>

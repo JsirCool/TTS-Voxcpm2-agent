@@ -81,17 +81,11 @@ export function ChunkEditor({
   // Build review banner text from diagnosis
   const reviewBannerParts: string[] = [];
   if (diagnosis) {
-    if (diagnosis.missing && diagnosis.missing.length > 0) {
-      reviewBannerParts.push(`缺失: "${diagnosis.missing.join('", "')}"`);
-    }
-    if (diagnosis.extra && diagnosis.extra.length > 0) {
-      reviewBannerParts.push(`多余: "${diagnosis.extra.join('", "')}"`);
-    }
     if (diagnosis.type) {
       reviewBannerParts.push(`类型: ${diagnosis.type}`);
     }
-    if (diagnosis.lowConfidenceWords && diagnosis.lowConfidenceWords.length > 0) {
-      reviewBannerParts.push(`低置信度: ${diagnosis.lowConfidenceWords.join(", ")}`);
+    if (diagnosis.detail) {
+      reviewBannerParts.push(diagnosis.detail);
     }
     if (diagnosis.verdict) {
       reviewBannerParts.push(diagnosis.verdict);

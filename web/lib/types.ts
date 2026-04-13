@@ -64,10 +64,8 @@ export interface Chunk {
   verifyScores?: VerifyScores;
   verifyDiagnosis?: {
     verdict?: string;
-    type?: string;
-    missing?: string[];
-    extra?: string[];
-    lowConfidenceWords?: string[];
+    type?: string;       // "speed_anomaly" | "silence_anomaly" | null
+    detail?: string;     // 人可读描述
   };
 }
 
@@ -136,10 +134,8 @@ export interface AttemptRecord {
   verdict: "pass" | "fail";
   scores: VerifyScores;
   diagnosis?: {
-    type?: string;
-    missing?: string[];
-    extra?: string[];
-    lowConfidenceWords?: string[];
+    type?: string;       // "speed_anomaly" | "silence_anomaly" | null
+    detail?: string;     // 人可读描述
   };
   params: Record<string, unknown>;
   textUsed: string;

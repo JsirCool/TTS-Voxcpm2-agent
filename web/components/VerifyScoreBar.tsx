@@ -14,9 +14,6 @@ interface ScoreEntry {
 const ENTRIES: ScoreEntry[] = [
   { key: "durationRatio", label: "时长/字数比" },
   { key: "silence", label: "静音检测" },
-  { key: "phoneticDistance", label: "音素距离" },
-  { key: "charRatio", label: "字符比" },
-  { key: "asrConfidence", label: "ASR置信度" },
 ];
 
 function scoreColor(v: number): string {

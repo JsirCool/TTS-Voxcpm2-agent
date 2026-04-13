@@ -268,19 +268,9 @@ export const ChunkRow = memo(function ChunkRow({
               >
                 {chunk.verifyDiagnosis?.verdict === "fail" || chunk.verifyScores.weightedScore < 0.7 ? "FAIL" : "PASS"}
               </span>
-              {chunk.verifyDiagnosis?.missing && chunk.verifyDiagnosis.missing.length > 0 && (
-                <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-300">
-                  missing: {chunk.verifyDiagnosis.missing.join(", ")}
-                </span>
-              )}
-              {chunk.verifyDiagnosis?.extra && chunk.verifyDiagnosis.extra.length > 0 && (
-                <span className="px-1 py-0.5 rounded text-[9px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400">
-                  extra: {chunk.verifyDiagnosis.extra.join(", ")}
-                </span>
-              )}
-              {chunk.verifyDiagnosis?.lowConfidenceWords && chunk.verifyDiagnosis.lowConfidenceWords.length > 0 && (
-                <span className="px-1 py-0.5 rounded text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-300">
-                  low-conf: {chunk.verifyDiagnosis.lowConfidenceWords.join(", ")}
+              {chunk.verifyDiagnosis?.detail && (
+                <span className="px-1 py-0.5 rounded text-[9px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 truncate max-w-[300px]" title={chunk.verifyDiagnosis.detail}>
+                  {chunk.verifyDiagnosis.detail}
                 </span>
               )}
             </button>
