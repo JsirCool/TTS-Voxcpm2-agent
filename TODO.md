@@ -4,8 +4,6 @@
 
 **一期目标：确定性的视频脚本转语音加字幕生产工具。**
 
-输入脚本 JSON → 输出 per-shot WAV + 时间对齐字幕，全流程可通过 Web UI 操作和监控。
-
 ---
 
 ## 已完成 ✓
@@ -14,32 +12,45 @@
 - Web UI：Episode 管理、Chunk pipeline 可视化、音频播放、字幕预览
 - 单 chunk 编辑/重试、Take 管理
 - 导出功能（Remotion 格式：per-shot WAV + subtitles.json + durations.json）
-- 错误处理、开发模式容错、P2 重试
-- Dark mode + 主题切换
-- 虚拟滚动（大 episode 性能）
-- ChunkRow Zustand 直连 + React.memo（减少 re-render）
-- 侧边栏可折叠 + 基础响应式兼容
-- HelpDialog 动态渲染 stage 说明
-- Stage 名称统一（check2/check3 → p2c/p2v）
+- 错误处理、开发模式容错
+- Dark mode + 主题切换（自定义 ThemeProvider，兼容 Next.js 16）
+- 虚拟滚动（@tanstack/react-virtual）
+- ChunkRow Zustand 直连 + React.memo
+- 侧边栏可折叠 + 状态缩略图 + 基础响应式
+- HelpDialog / stage-info 动态渲染，与代码逻辑同步
+- Stage 名称统一（check2/check3 → p2c/p2v，domain.py 移除 p3）
+- P2v 2 维评估（duration + silence）+ 前端展示
+- P5 word-level 时间戳对齐 + 智能分行（从原版 JS 移植）
+- repair 循环简化（删 L0/L1，单次 P2→P2c→P2v，失败直接 needs_review）
+- 用户自带 API Key（Fish + Groq，localStorage + header 透传）
+- Groq Whisper ASR 接入（云端替代本地 WhisperX）
+- ChunkEditor 原型图风格重写（inline edit + review banner）
+- 菜单 Radix DropdownMenu 统一 + 汉化
+- TTS 参数描述对齐 Fish Audio 官方文档
 - 旧版 CLI 脚本归档（`_archive/`）
+- 过时文档归档 + README 重写
+- 死代码清理（repair.py、RepairConfig、RepairAction）
 
 ---
 
-## P0 · 生产可用性
+## P0 · 部署上线
+
+### 部署容器化
+
+docker-compose 加 API server + Web，一键 `docker compose up` 全套启动。
+
+### 存储过期清理
+
+按容量清理（超阈值删最旧未锁定 episode）+ episode locked 保护 demo 数据。
+
+---
+
+## P1 · 功能补全
 
 ### 多选 chunk 合成
 
 后端已有：`run_episode_flow(mode="synthesize", chunk_ids=[...])`。
 前端：ChunksTable checkbox + floating action bar。
-
-### 发音质量预筛（确定性）
-
-不需要 LLM，纯确定性逻辑。
-
-- P1r：正则提取英文 token → 标记"有发音风险"
-- P2r：P2v 后对比 original vs transcribed → 标记"发音偏差"
-- UI 高亮偏差详情（如 "RAG → IG"）
-- 不阻塞 pipeline
 
 ### 脚本预览/下载
 
@@ -47,22 +58,10 @@
 
 ---
 
-## P1 · 简化与稳定
+## P2 · 质量与打磨（低优先级）
 
-### 简化 repair 循环
-
-- 保留 char_ratio 粗筛 + needs_review 人工兜底
-- 删除 L0/L1 自动循环
-- `_synth_one_chunk` 简化为单次 P2→P2c→P2v
-
-### Tech debt
-
-- adapter 文件缺 TS 单元测试
-
----
-
-## P2 · UI 打磨（低优先级）
-
+- `next-themes` 从 package.json 移除（已替换为自定义实现）
+- adapter TS 单元测试
 - Sidebar 按状态分组
 - 紧凑模式
 
