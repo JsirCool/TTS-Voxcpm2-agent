@@ -27,7 +27,7 @@ interface FormState {
   reference_id: string;
 }
 
-const DEFAULTS: FormState = { model: "s2-pro", temperature: "0.7", top_p: "0.7", speed: "1.15", reference_id: "" };
+const DEFAULTS: FormState = { model: "s2-pro", temperature: "0.7", top_p: "0.7", speed: "1.25", reference_id: "" };
 
 function configToForm(config: Record<string, unknown>): FormState {
   return {
@@ -44,7 +44,7 @@ function formToConfig(form: FormState): Record<string, unknown> {
     model: form.model,
     temperature: parseFloat(form.temperature) || 0.7,
     top_p: parseFloat(form.top_p) || 0.7,
-    speed: parseFloat(form.speed) || 1.15,
+    speed: parseFloat(form.speed) || 1.25,
     reference_id: form.reference_id || undefined,
   };
 }
@@ -90,7 +90,7 @@ export function TtsConfigBar({ episodeId, config, onConfigSaved, onUpdateConfig 
         {field("model", String(config.model ?? "s2-pro"))}
         {field("temperature", String(config.temperature ?? "0.7"))}
         {field("top_p", String(config.top_p ?? "0.7"))}
-        {field("speed", `${config.speed ?? 1.15}x`)}
+        {field("speed", `${config.speed ?? 1.25}x`)}
         {field("reference_id", String(config.reference_id || "(none)"))}
         <button type="button" onClick={() => setDialogOpen(true)}
           className="ml-auto px-2 py-0.5 text-[11px] rounded border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-400 hover:bg-white dark:hover:bg-neutral-700 hover:border-neutral-400 dark:hover:border-neutral-500"

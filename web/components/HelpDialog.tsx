@@ -75,7 +75,7 @@ export function HelpDialog({ open, onClose }: Props) {
     "normalize": false,
     "temperature": 0.3,
     "top_p": 0.5,
-    "speed": 1.15,
+    "speed": 1.25,
     "reference_id": "7f3a2b..."
   },
   "segments": [
@@ -123,7 +123,7 @@ export function HelpDialog({ open, onClose }: Props) {
                   <tr>
                     <td className="px-2 py-1.5 border border-neutral-200 font-mono">speed</td>
                     <td className="px-2 py-1.5 border border-neutral-200">number</td>
-                    <td className="px-2 py-1.5 border border-neutral-200 font-mono">1.15</td>
+                    <td className="px-2 py-1.5 border border-neutral-200 font-mono">1.25</td>
                     <td className="px-2 py-1.5 border border-neutral-200">atempo 后处理速度。1.0=原速</td>
                   </tr>
                   <tr>

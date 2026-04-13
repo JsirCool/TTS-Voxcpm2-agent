@@ -7,7 +7,7 @@
   "p2": {
     "concurrency": 6,
     "max_retries": 3,
-    "default_speed": 1.15,
+    "default_speed": 1.25,
     "model": "s2-pro",
     "temperature": 0.3,
     "top_p": 0.5
