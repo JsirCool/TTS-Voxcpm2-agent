@@ -1,5 +1,5 @@
-app = 'tts-agent-harness'
-primary_region = 'hkg'
+app = 'hiveden-tts'
+primary_region = 'nrt'
 
 [build]
 
