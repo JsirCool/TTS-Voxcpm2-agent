@@ -252,11 +252,11 @@ class TestStageRunRepo:
         ep = await _make_episode(session)
         ids = await _make_chunks(session, ep, n=1)
         repo = StageRunRepo(session)
-        for stage in ("p2", "p3", "p5"):
+        for stage in ("p2", "p2v", "p5"):
             await repo.upsert(chunk_id=ids[0], stage=stage, status="ok")
         await session.commit()
         rows = await repo.list_by_chunk(ids[0])
-        assert [r.stage for r in rows] == ["p2", "p3", "p5"]
+        assert [r.stage for r in rows] == ["p2", "p2v", "p5"]
 
 
 # ---------------------------------------------------------------------------
