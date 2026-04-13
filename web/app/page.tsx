@@ -29,7 +29,14 @@ export default function Page() {
   // Defer selectedId to client-side only to avoid SSR hydration mismatch
   // (localStorage is unavailable during SSR → selectedId=null on server but non-null on client)
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    // Restore localStorage values after mount (SSR-safe)
+    const savedId = localStorage.getItem("tts-harness:selectedEpisode");
+    if (savedId) store.selectEpisode(savedId);
+    const savedCollapsed = localStorage.getItem("tts-harness:sidebarCollapsed") === "true";
+    if (savedCollapsed) store.setSidebarCollapsed(true);
+    setMounted(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const selectedId = mounted ? store.selectedId : null;
 
   // --- Server state (SWR) ---

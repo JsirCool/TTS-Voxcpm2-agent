@@ -52,13 +52,14 @@ interface HarnessState {
 
 export const useHarnessStore = create<HarnessState>((set, get) => ({
   // --- Initial state ---
-  selectedId: typeof window !== "undefined" ? window.localStorage.getItem("tts-harness:selectedEpisode") : null,
+  // SSR-safe defaults: localStorage values restored via useEffect in page.tsx
+  selectedId: null,
   editing: null,
   playingChunkId: null,
   edits: {},
   drawerOpen: null,
   helpOpen: false,
-  sidebarCollapsed: typeof window !== "undefined" ? window.localStorage.getItem("tts-harness:sidebarCollapsed") === "true" : false,
+  sidebarCollapsed: false,
 
   // --- UI actions ---
   selectEpisode: (id) => {
