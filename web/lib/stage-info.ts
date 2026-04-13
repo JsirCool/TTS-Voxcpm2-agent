@@ -39,17 +39,17 @@ export const STAGE_INFO: Record<StageName, StageInfo> = {
   },
   p2v: {
     title: "P2v · 内容验证",
-    description: "ASR 转写 + 原文比对做质量校验，同时产出 transcript",
+    description: "ASR 转写（Groq Whisper 或本地 WhisperX）产出 transcript，同时检查语速和静音异常。",
     inputs: "take WAV 音频 + chunk.textNormalized",
-    outputs: "transcript.json（MinIO）+ 质量评分",
-    failure: "ASR 转写失败 / 内容偏差超阈值",
+    outputs: "transcript.json（MinIO）+ 质量评分（语速 + 静音 2 维）",
+    failure: "ASR 服务不可用 / 语速异常 / 异常长停顿",
   },
   p5: {
     title: "P5 · 字幕生成",
-    description: "根据 transcript 的 word 时间戳，按字符数加权分配时间，生成 SRT 格式字幕文件。字幕来源优先用 subtitleText，否则用 text（去掉控制标记）。",
-    inputs: "transcript.json + chunk.subtitleText / chunk.text",
+    description: "利用 WhisperX word-level 时间戳精确对齐字幕行，按字符数权重分配 words 给每行。智能分行（逗号/顿号/中英边界断行，≤20字/行）。无 word 数据时 fallback 为字符加权。字幕来源优先用 subtitleText，否则用 text（自动去控制标记）。",
+    inputs: "transcript.json（word timestamps）+ chunk.subtitleText / chunk.text",
     outputs: "subtitle.srt（MinIO）",
-    failure: "transcript 为空 / chunk 无 selected_take",
+    failure: "transcript 为空 / chunk 无 selected_take / 源文本全是控制标记",
   },
   p6: {
     title: "P6 · 音频拼接",
