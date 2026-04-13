@@ -30,6 +30,8 @@
 - 旧版 CLI 脚本归档（`_archive/`）
 - 过时文档归档 + README 重写
 - 死代码清理（repair.py、RepairConfig、RepairAction）
+- 存储过期清理（按容量 + episode locked 保护）
+- 脚本预览（JSON 视图 + 下载）
 
 ---
 
@@ -38,10 +40,6 @@
 ### 部署容器化
 
 docker-compose 加 API server + Web，一键 `docker compose up` 全套启动。
-
-### 存储过期清理
-
-按容量清理（超阈值删最旧未锁定 episode）+ episode locked 保护 demo 数据。
 
 ---
 
@@ -52,18 +50,12 @@ docker-compose 加 API server + Web，一键 `docker compose up` 全套启动。
 后端已有：`run_episode_flow(mode="synthesize", chunk_ids=[...])`。
 前端：ChunksTable checkbox + floating action bar。
 
-### 脚本预览/下载
-
-已实现，待验证。
-
 ---
 
 ## P2 · 质量与打磨（低优先级）
 
 - `next-themes` 从 package.json 移除（已替换为自定义实现）
 - adapter TS 单元测试
-- Sidebar 按状态分组
-- 紧凑模式
 
 ---
 
