@@ -2,6 +2,16 @@
 # API routes → FastAPI (8100), everything else → Next.js (3010)
 
 :8080 {
+	# SSE stream — flush immediately, no buffering, no timeout
+	handle /episodes/*/stream {
+		reverse_proxy localhost:8100 {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+			}
+		}
+	}
+
 	# FastAPI routes
 	handle /episodes {
 		reverse_proxy localhost:8100
