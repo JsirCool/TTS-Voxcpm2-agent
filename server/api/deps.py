@@ -40,6 +40,7 @@ def _build_storage() -> MinIOStorage:
         access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
         secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
         bucket=os.environ.get("MINIO_BUCKET", "tts-harness"),
+        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
     )
 
 
