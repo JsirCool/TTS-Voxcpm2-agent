@@ -1403,7 +1403,7 @@ async def export_episode(
 
                 # Generate silence files
                 sil_padding = tmp_path / "sil_padding.wav"
-                await generate_silence(sil_padding, PADDING_S)
+                await generate_silence(sil_padding, PADDING_S, sample_rate=44100)
 
                 for i, (timing, item) in enumerate(zip(timings, items)):
                     take = item["take"]
@@ -1434,7 +1434,9 @@ async def export_episode(
                     proc = subprocess.run(
                         ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                          "-f", "concat", "-safe", "0",
-                         "-i", str(concat_list), "-c", "copy", str(shot_wav)],
+                         "-i", str(concat_list),
+                         "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le",
+                         str(shot_wav)],
                         capture_output=True, timeout=30,
                     )
                     if proc.returncode != 0:
