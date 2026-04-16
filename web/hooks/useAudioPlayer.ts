@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useHarnessStore } from "@/lib/store";
+import { playExclusiveAudio, releaseExclusiveAudio, stopExclusiveAudio } from "@/lib/audio-session";
 
 interface AudioPlayer {
   ref: React.RefObject<HTMLAudioElement | null>;
@@ -24,8 +25,14 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
     const el = ref.current;
     if (!el) return;
     const onTime = () => setCurrentTime(el.currentTime);
+    const onPause = () => {
+      if (el.currentTime <= 0.05) {
+        setCurrentTime(0);
+      }
+    };
     const onEnded = () => {
       setCurrentTime(0);
+      releaseExclusiveAudio(el);
       const { continuousPlay } = useHarnessStore.getState();
       if (continuousPlay) {
         advanceToNext();
@@ -34,9 +41,11 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
       }
     };
     el.addEventListener("timeupdate", onTime);
+    el.addEventListener("pause", onPause);
     el.addEventListener("ended", onEnded);
     return () => {
       el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("pause", onPause);
       el.removeEventListener("ended", onEnded);
     };
   }, [setPlayingChunkId, advanceToNext]);
@@ -50,22 +59,30 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    let cancelled = false;
+    let onLoadedMetadata: (() => void) | null = null;
     if (!isPlaying) {
-      el.pause();
-      el.currentTime = 0;
+      stopExclusiveAudio(el);
       setCurrentTime(0);
     } else {
-      // Auto-play when this chunk becomes active (continuous play or manual)
-      el.playbackRate = playbackRate;
+      const startPlayback = () => {
+        if (cancelled) return;
+        el.playbackRate = playbackRate;
+        playExclusiveAudio(el).catch(() => {});
+      };
       if (el.readyState >= 1) {
-        el.play().catch(() => {});
+        startPlayback();
       } else {
-        el.addEventListener("loadedmetadata", () => {
-          el.playbackRate = playbackRate;
-          el.play().catch(() => {});
-        }, { once: true });
+        onLoadedMetadata = () => startPlayback();
+        el.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
       }
     }
+    return () => {
+      cancelled = true;
+      if (onLoadedMetadata) {
+        el.removeEventListener("loadedmetadata", onLoadedMetadata);
+      }
+    };
   }, [isPlaying, playbackRate]);
 
   const ensureReady = useCallback(async () => {
@@ -89,7 +106,7 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
       ensureReady().then((ready) => {
         if (ready) {
           ready.playbackRate = playbackRate;
-          ready.play().catch(() => {});
+          playExclusiveAudio(ready).catch(() => {});
         }
       });
     }
@@ -103,7 +120,7 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
       el.playbackRate = playbackRate;
       el.currentTime = target;
       setCurrentTime(target);
-      el.play().catch(() => {});
+      playExclusiveAudio(el).catch(() => {});
     });
   }, [chunkId, durationS, setPlayingChunkId, ensureReady, playbackRate]);
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useState } from "react";
-import type { Chunk, ChunkEdit, ChunkStatus, StageName } from "@/lib/types";
+import { CHUNK_STAGE_ORDER, type Chunk, type ChunkEdit, type ChunkStatus, type StageName } from "@/lib/types";
 import { STAGE_SHORT_LABEL } from "@/lib/stage-labels";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
 import { useHarnessStore } from "@/lib/store";
@@ -24,7 +24,7 @@ interface Props {
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
   onQuickRetry?: (stage: StageName) => void | Promise<void>;
-  synthesizing?: boolean;
+  processingStage?: StageName | null;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -77,6 +77,30 @@ function statusIcon(status: ChunkStatus) {
   }
 }
 
+function getRunningChunkStage(chunk: Chunk): StageName | null {
+  return CHUNK_STAGE_ORDER.find((stage) =>
+    chunk.stageRuns.some((stageRun) => stageRun.stage === stage && stageRun.status === "running"),
+  ) ?? null;
+}
+
+function getChunkProgress(chunk: Chunk, processingStage: StageName | null | undefined) {
+  const activeStage = getRunningChunkStage(chunk) ?? processingStage ?? null;
+  if (!activeStage || !CHUNK_STAGE_ORDER.includes(activeStage)) return null;
+
+  const currentIndex = CHUNK_STAGE_ORDER.indexOf(activeStage);
+  const completedCount = CHUNK_STAGE_ORDER.slice(0, currentIndex).filter((stage) =>
+    chunk.stageRuns.some((stageRun) => stageRun.stage === stage && stageRun.status === "ok"),
+  ).length;
+
+  return {
+    activeStage,
+    currentIndex,
+    completedCount,
+    progressPercent: Math.max(12, ((completedCount + 0.45) / CHUNK_STAGE_ORDER.length) * 100),
+    isConfirmedRunning: getRunningChunkStage(chunk) === activeStage,
+  };
+}
+
 export const ChunkRow = memo(function ChunkRow({
   chunk,
   displayMode,
@@ -85,7 +109,7 @@ export const ChunkRow = memo(function ChunkRow({
   onUseTake,
   onSynthesize,
   onQuickRetry,
-  synthesizing = false,
+  processingStage = null,
   getAudioUrl,
 }: Props) {
   const isEditing = useHarnessStore((state) => state.editing === chunk.id);
@@ -123,6 +147,8 @@ export const ChunkRow = memo(function ChunkRow({
   const canPlay = hasAudio && !isDirty;
   const needsSynth = chunk.status === "pending" && !isDirty;
   const onEdit = () => startEditing(chunk.id);
+  const progressState = getChunkProgress(chunk, processingStage);
+  const isProcessing = Boolean(progressState);
 
   const rowBg = isPlaying
     ? "bg-blue-50 dark:bg-blue-900/20 shadow-[inset_3px_0_0_#2563eb]"
@@ -166,10 +192,10 @@ export const ChunkRow = memo(function ChunkRow({
           <button
             type="button"
             onClick={onSynthesize}
-            disabled={synthesizing}
+            disabled={isProcessing}
             title="合成并播放"
             className={`w-7 h-7 inline-flex items-center justify-center rounded ${
-              synthesizing ? "text-blue-400 animate-pulse cursor-wait" : "hover:bg-blue-100 text-blue-600"
+              isProcessing ? "text-blue-400 animate-pulse cursor-wait" : "hover:bg-blue-100 text-blue-600"
             }`}
           >
             ▶
@@ -213,6 +239,47 @@ export const ChunkRow = memo(function ChunkRow({
         {chunk.stageRuns.length > 0 ? (
           <div className="mt-1">
             <StagePipeline stageRuns={chunk.stageRuns} onStageClick={onStageClick} compact />
+          </div>
+        ) : null}
+
+        {progressState ? (
+          <div className="mt-1.5 rounded-md border border-sky-200 bg-sky-50/80 px-2 py-1.5 dark:border-sky-900/50 dark:bg-sky-950/20">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">
+                {progressState.isConfirmedRunning ? `${STAGE_SHORT_LABEL[progressState.activeStage]}进行中` : `已提交${STAGE_SHORT_LABEL[progressState.activeStage]}`}
+              </span>
+              <span className="text-[10px] text-sky-600 dark:text-sky-400">
+                {progressState.completedCount}/{CHUNK_STAGE_ORDER.length}
+              </span>
+            </div>
+            <div className="mt-1.5 flex gap-1">
+              {CHUNK_STAGE_ORDER.map((stage, index) => {
+                const isComplete = index < progressState.currentIndex
+                  && chunk.stageRuns.some((stageRun) => stageRun.stage === stage && stageRun.status === "ok");
+                const isActive = stage === progressState.activeStage;
+                return (
+                  <span
+                    key={stage}
+                    title={STAGE_SHORT_LABEL[stage]}
+                    className={[
+                      "h-1.5 flex-1 rounded-full transition-all",
+                      isComplete
+                        ? "bg-emerald-500"
+                        : isActive
+                          ? "bg-sky-500 animate-pulse"
+                          : "bg-sky-100 dark:bg-sky-950/60",
+                    ].join(" ")}
+                  />
+                );
+              })}
+            </div>
+            <div className="mt-1 flex justify-between text-[10px] text-sky-700/80 dark:text-sky-300/80">
+              {CHUNK_STAGE_ORDER.map((stage) => (
+                <span key={stage} className="min-w-0 flex-1 truncate text-center">
+                  {STAGE_SHORT_LABEL[stage]}
+                </span>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -296,10 +363,10 @@ export const ChunkRow = memo(function ChunkRow({
           <button
             type="button"
             onClick={() => onQuickRetry?.(quickRetryStage)}
-            disabled={synthesizing || !onQuickRetry}
+            disabled={isProcessing || !onQuickRetry}
             title={`快捷重跑${quickRetryLabel}`}
             className={`h-7 px-2 inline-flex items-center justify-center rounded text-[10px] font-semibold ${
-              synthesizing || !onQuickRetry
+              isProcessing || !onQuickRetry
                 ? "bg-neutral-200 dark:bg-neutral-700 text-neutral-400 cursor-wait"
                 : "border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             }`}
@@ -325,7 +392,7 @@ export const ChunkRow = memo(function ChunkRow({
 }, (prev, next) => {
   return prev.chunk === next.chunk
     && prev.displayMode === next.displayMode
-    && prev.synthesizing === next.synthesizing
+    && prev.processingStage === next.processingStage
     && prev.onStageClick === next.onStageClick
     && prev.onPreviewTake === next.onPreviewTake
     && prev.onUseTake === next.onUseTake

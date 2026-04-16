@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { Moon, Server, Sun } from "lucide-react";
 import { toast } from "sonner";
@@ -30,14 +30,21 @@ import { StageLogDrawer } from "@/components/StageLogDrawer";
 import { StageProgress } from "@/components/StageProgress";
 import { TtsConfigBar } from "@/components/TtsConfigBar";
 
+type PendingChunkStage = {
+  stage: StageName;
+  baselineAttempt: number;
+  startedAt: number;
+};
+
 export default function Page() {
   const store = useHarnessStore();
   const [mounted, setMounted] = useState(false);
   const [newEpOpen, setNewEpOpen] = useState(false);
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
-  const [synthesizingCid, setSynthesizingCid] = useState<string | null>(null);
+  const [pendingChunkStages, setPendingChunkStages] = useState<Record<string, PendingChunkStage>>({});
   const [chunkFilterMode, setChunkFilterMode] = useState<ChunkFilterMode>("all");
+  const pendingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     const savedId = localStorage.getItem("tts-harness:selectedEpisode");
@@ -65,6 +72,85 @@ export default function Page() {
   const stagedChunkCount = Object.keys(store.edits).length;
   const lastRunId = typeof episode?.metadata?.lastRunId === "string" ? episode.metadata.lastRunId : null;
   const sidebarCollapsed = store.sidebarCollapsed;
+
+  const clearPendingStage = useCallback((cid: string, startedAt?: number) => {
+    const timer = pendingTimersRef.current[cid];
+    if (timer) {
+      clearTimeout(timer);
+      delete pendingTimersRef.current[cid];
+    }
+    setPendingChunkStages((current) => {
+      const existing = current[cid];
+      if (!existing || (startedAt != null && existing.startedAt !== startedAt)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[cid];
+      return next;
+    });
+  }, []);
+
+  const markPendingStage = useCallback((cid: string, stage: StageName) => {
+    const baselineAttempt = episode?.chunks
+      .find((chunk) => chunk.id === cid)
+      ?.stageRuns.find((stageRun) => stageRun.stage === stage)
+      ?.attempt ?? 0;
+    const startedAt = Date.now();
+    const timer = pendingTimersRef.current[cid];
+    if (timer) clearTimeout(timer);
+    pendingTimersRef.current[cid] = setTimeout(() => clearPendingStage(cid, startedAt), 15000);
+    setPendingChunkStages((current) => ({
+      ...current,
+      [cid]: { stage, baselineAttempt, startedAt },
+    }));
+  }, [clearPendingStage, episode]);
+
+  useEffect(() => {
+    if (!episode) {
+      for (const timer of Object.values(pendingTimersRef.current)) clearTimeout(timer);
+      pendingTimersRef.current = {};
+      setPendingChunkStages({});
+      return;
+    }
+    setPendingChunkStages((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [cid, pending] of Object.entries(current)) {
+        const chunk = episode.chunks.find((item) => item.id === cid);
+        if (!chunk) {
+          delete next[cid];
+          changed = true;
+          continue;
+        }
+        const stageRun = chunk.stageRuns.find((run) => run.stage === pending.stage);
+        const stageStarted = Boolean(
+          stageRun
+          && (
+            stageRun.status === "running"
+            || stageRun.attempt > pending.baselineAttempt
+            || (
+              typeof stageRun.startedAt === "string"
+              && Date.parse(stageRun.startedAt) >= pending.startedAt - 1000
+            )
+          ),
+        );
+        if (stageStarted) {
+          const timer = pendingTimersRef.current[cid];
+          if (timer) {
+            clearTimeout(timer);
+            delete pendingTimersRef.current[cid];
+          }
+          delete next[cid];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [episode]);
+
+  useEffect(() => () => {
+    for (const timer of Object.values(pendingTimersRef.current)) clearTimeout(timer);
+  }, []);
 
   const playableIds = (episode?.chunks ?? [])
     .filter((chunk) => chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review")
@@ -142,9 +228,18 @@ export default function Page() {
   const [execRetry, retrying] = useAction(
     useCallback(async (cascade: boolean) => {
       if (!store.selectedId || !store.drawerOpen) return;
-      await store.retryChunk(store.selectedId, store.drawerOpen.cid, store.drawerOpen.stage, cascade);
+      const { cid, stage } = store.drawerOpen;
+      markPendingStage(cid, stage);
+      try {
+        await store.retryChunk(store.selectedId, cid, stage, cascade);
+        void mutateDetail();
+        void mutateList();
+      } catch (error) {
+        clearPendingStage(cid);
+        throw error;
+      }
       store.closeDrawer();
-    }, [store]),
+    }, [clearPendingStage, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "重试失败" },
   );
 
@@ -156,9 +251,17 @@ export default function Page() {
       const ok = await confirmAction(`重跑 ${failed.length} 个失败的“${STAGE_SHORT_LABEL[stage]}”？`);
       if (!ok) return;
       for (const chunk of failed) {
-        await store.retryChunk(episode.id, chunk.id, stage, true);
+        markPendingStage(chunk.id, stage);
+        try {
+          await store.retryChunk(episode.id, chunk.id, stage, true);
+        } catch (error) {
+          clearPendingStage(chunk.id);
+          throw error;
+        }
       }
-    }, [confirmAction, episode, store]),
+      void mutateDetail();
+      void mutateList();
+    }, [clearPendingStage, confirmAction, episode, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "批量重跑失败" },
   );
 
@@ -187,28 +290,32 @@ export default function Page() {
   const [execSynthesize] = useAction(
     useCallback(async (cid: string) => {
       if (!episode) return;
-      setSynthesizingCid(cid);
+      markPendingStage(cid, "p2");
       try {
         await store.retryChunk(episode.id, cid, "p2", false);
-        await mutateDetail();
-        store.togglePlay(cid);
-      } finally {
-        setSynthesizingCid(null);
+        void mutateDetail();
+        void mutateList();
+      } catch (error) {
+        clearPendingStage(cid);
+        throw error;
       }
-    }, [episode, mutateDetail, store]),
+    }, [clearPendingStage, episode, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "配音失败" },
   );
 
   const [execQuickRetry] = useAction(
     useCallback(async (cid: string, stage: StageName) => {
       if (!episode) return;
-      setSynthesizingCid(cid);
+      markPendingStage(cid, stage);
       try {
         await store.retryChunk(episode.id, cid, stage, true);
-      } finally {
-        setSynthesizingCid(null);
+        void mutateDetail();
+        void mutateList();
+      } catch (error) {
+        clearPendingStage(cid);
+        throw error;
       }
-    }, [episode, store]),
+    }, [clearPendingStage, episode, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "快捷重跑失败" },
   );
 
@@ -218,9 +325,17 @@ export default function Page() {
       const ok = await confirmAction(`批量从“${STAGE_SHORT_LABEL[stage]}”重跑 ${chunkIds.length} 个 chunk？`);
       if (!ok) return;
       for (const cid of chunkIds) {
-        await store.retryChunk(episode.id, cid, stage, true);
+        markPendingStage(cid, stage);
+        try {
+          await store.retryChunk(episode.id, cid, stage, true);
+        } catch (error) {
+          clearPendingStage(cid);
+          throw error;
+        }
       }
-    }, [confirmAction, episode, store]),
+      void mutateDetail();
+      void mutateList();
+    }, [clearPendingStage, confirmAction, episode, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "批量重跑失败" },
   );
 
@@ -411,7 +526,7 @@ export default function Page() {
                       onUseTake={execUseTake}
                       onSynthesize={execSynthesize}
                       onQuickRetry={execQuickRetry}
-                      synthesizingCid={synthesizingCid}
+                      pendingStages={pendingChunkStages}
                       getAudioUrl={getAudioUrl}
                     />
                   </>

@@ -11,6 +11,7 @@
 import { create } from "zustand";
 import type { ChunkEdit, EditBatch, StageName } from "./types";
 import * as api from "./hooks";
+import { playExclusiveAudio, stopExclusiveAudio } from "./audio-session";
 
 interface HarnessState {
   // --- UI state ---
@@ -76,6 +77,7 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
 
   // --- UI actions ---
   selectEpisode: (id) => {
+    stopExclusiveAudio();
     set({ selectedId: id, edits: {}, editing: null, playingChunkId: null, drawerOpen: null });
     if (typeof window !== "undefined") window.localStorage.setItem("tts-harness:selectedEpisode", id);
   },
@@ -150,6 +152,7 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     const edits = get().edits;
     if (Object.keys(edits).length === 0) return;
     await api.applyEdits(episodeId, edits);
+    stopExclusiveAudio();
     set({ edits: {}, playingChunkId: null });
   },
 
@@ -192,7 +195,12 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
   },
 
   previewTake: (audioUri) => {
+    stopExclusiveAudio();
+    set({ playingChunkId: null, continuousPlay: false });
     const audio = new Audio(api.getAudioUrl(audioUri));
-    audio.play().catch(() => {});
+    audio.addEventListener("ended", () => stopExclusiveAudio(audio), { once: true });
+    playExclusiveAudio(audio).catch(() => {
+      stopExclusiveAudio(audio);
+    });
   },
 }));

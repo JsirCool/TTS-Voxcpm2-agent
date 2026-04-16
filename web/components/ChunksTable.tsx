@@ -20,7 +20,7 @@ interface Props {
   onUseTake?: (cid: string, takeId: string) => void;
   onSynthesize?: (cid: string) => void;
   onQuickRetry?: (cid: string, stage: StageName) => void | Promise<void>;
-  synthesizingCid?: string | null;
+  pendingStages?: Record<string, { stage: StageName }>;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -42,7 +42,7 @@ export function ChunksTable({
   onUseTake,
   onSynthesize,
   onQuickRetry,
-  synthesizingCid,
+  pendingStages,
   getAudioUrl,
 }: Props) {
   void episodeId;
@@ -203,7 +203,7 @@ export function ChunksTable({
                   onUseTake={onUseTake ? (takeId) => onUseTake(chunk.id, takeId) : undefined}
                   onSynthesize={onSynthesize ? () => onSynthesize(chunk.id) : undefined}
                   onQuickRetry={onQuickRetry ? (stage) => onQuickRetry(chunk.id, stage) : undefined}
-                  synthesizing={synthesizingCid === chunk.id}
+                  processingStage={pendingStages?.[chunk.id]?.stage ?? null}
                   getAudioUrl={getAudioUrl}
                 />
               </div>
@@ -223,7 +223,7 @@ interface RowGroupProps {
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
   onQuickRetry?: (stage: StageName) => void | Promise<void>;
-  synthesizing?: boolean;
+  processingStage?: StageName | null;
   getAudioUrl: (uri: string) => string;
 }
 
@@ -235,7 +235,7 @@ const RowGroup = memo(function RowGroup({
   onUseTake,
   onSynthesize,
   onQuickRetry,
-  synthesizing,
+  processingStage,
   getAudioUrl,
 }: RowGroupProps) {
   const isEditing = useHarnessStore((state) => state.editing === chunk.id);
@@ -253,7 +253,7 @@ const RowGroup = memo(function RowGroup({
         onUseTake={onUseTake}
         onSynthesize={onSynthesize}
         onQuickRetry={onQuickRetry}
-        synthesizing={synthesizing}
+        processingStage={processingStage}
         getAudioUrl={getAudioUrl}
       />
       {isEditing ? (
@@ -269,7 +269,7 @@ const RowGroup = memo(function RowGroup({
 }, (prev, next) => {
   return prev.chunk === next.chunk
     && prev.displayMode === next.displayMode
-    && prev.synthesizing === next.synthesizing
+    && prev.processingStage === next.processingStage
     && prev.onStageClick === next.onStageClick
     && prev.onPreviewTake === next.onPreviewTake
     && prev.onUseTake === next.onUseTake
