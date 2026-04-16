@@ -383,8 +383,9 @@ async def update_config(
     ep = await repo.get(episode_id)
     if ep is None:
         raise DomainError("not_found", f"episode '{episode_id}' not found")
-    # Merge: body.config overwrites existing keys
-    merged = validate_tts_config({**(ep.config or {}), **body.config})
+    # Replace the episode override config as a whole so switching modes
+    # clears stale mode-specific fields instead of silently keeping them.
+    merged = validate_tts_config(body.config)
     from sqlalchemy import update
     from server.core.models import Episode as EpisodeModel
     await session.execute(
