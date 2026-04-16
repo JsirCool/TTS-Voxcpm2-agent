@@ -54,6 +54,7 @@ from server.api.deps import get_prefect_client, get_session, get_storage
 from server.core.tts_presets import validate_tts_config
 
 router = APIRouter(tags=["episodes"])
+CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +846,8 @@ async def edit_chunk(
     chunk_id: str,
     text_normalized: str | None = None,
     subtitle_text: str | None = None,
+    control_prompt: str | None = None,
+    clear_control_prompt: bool = False,
     session: AsyncSession = Depends(get_session),
 ) -> EditResponse:
     # Check locked
@@ -862,10 +865,19 @@ async def edit_chunk(
     if chunk is None or chunk.episode_id != episode_id:
         raise DomainError("not_found", f"chunk '{chunk_id}' not found in episode '{episode_id}'")
 
+    next_metadata: dict[str, Any] | None = None
+    if control_prompt is not None or clear_control_prompt:
+        next_metadata = dict(chunk.extra_metadata or {})
+        if clear_control_prompt:
+            next_metadata.pop(CHUNK_CONTROL_PROMPT_OVERRIDE_KEY, None)
+        else:
+            next_metadata[CHUNK_CONTROL_PROMPT_OVERRIDE_KEY] = control_prompt or ""
+
     edit = ChunkEdit(
         chunk_id=chunk_id,
         text_normalized=text_normalized,
         subtitle_text=subtitle_text,
+        metadata=next_metadata,
     )
     updated = await chunk_repo.apply_edits([edit])
 
@@ -874,7 +886,12 @@ async def edit_chunk(
         episode_id=episode_id,
         chunk_id=chunk_id,
         kind="chunk_edited",
-        payload={"text_normalized": text_normalized, "subtitle_text": subtitle_text},
+        payload={
+            "text_normalized": text_normalized,
+            "subtitle_text": subtitle_text,
+            "control_prompt": control_prompt,
+            "clear_control_prompt": clear_control_prompt,
+        },
     )
     await session.commit()
 

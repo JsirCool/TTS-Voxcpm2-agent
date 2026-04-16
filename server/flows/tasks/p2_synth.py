@@ -58,6 +58,7 @@ from server.core.repositories import ChunkRepo, TakeRepo
 from server.core.storage import MinIOStorage, chunk_take_key
 
 log = logging.getLogger(__name__)
+CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
 
 # Text longer than this triggers a non-fatal warning (mainly for auditability).
 TEXT_LENGTH_WARN_THRESHOLD = 3000
@@ -196,6 +197,18 @@ async def run_p2_synth(
                 "invalid_input", f"chunk {chunk_id} has empty text_normalized"
             )
         episode_id = chunk.episode_id
+
+        override_present = isinstance(chunk.extra_metadata, dict) and (
+            CHUNK_CONTROL_PROMPT_OVERRIDE_KEY in chunk.extra_metadata
+        )
+        if override_present:
+            override_raw = chunk.extra_metadata.get(CHUNK_CONTROL_PROMPT_OVERRIDE_KEY)
+            merged_params = tts_params.model_dump()
+            if isinstance(override_raw, str) and override_raw.strip():
+                merged_params["control_prompt"] = override_raw.strip()
+            else:
+                merged_params.pop("control_prompt", None)
+            tts_params = FishTTSParams(**merged_params)
 
         if len(text) > TEXT_LENGTH_WARN_THRESHOLD:
             log.warning(

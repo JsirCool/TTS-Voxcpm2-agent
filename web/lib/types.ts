@@ -108,6 +108,8 @@ export interface ScriptSegment {
 export interface ChunkEdit {
   textNormalized?: string;
   subtitleText?: string;
+  controlPrompt?: string;
+  clearControlPrompt?: boolean;
 }
 export type EditBatch = Record<ChunkId, ChunkEdit>;
 

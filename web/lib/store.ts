@@ -135,7 +135,7 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     const edits = get().edits;
     let tts = 0, sub = 0;
     for (const e of Object.values(edits)) {
-      if (e.textNormalized !== undefined) tts++;
+      if (e.textNormalized !== undefined || e.controlPrompt !== undefined || e.clearControlPrompt) tts++;
       if (e.subtitleText !== undefined) sub++;
     }
     return { tts, sub };

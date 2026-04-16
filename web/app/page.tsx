@@ -527,6 +527,7 @@ export default function Page() {
                     </div>
                     <ChunksTable
                       episodeId={episode.id}
+                      episodeConfig={episode.config}
                       chunks={episode.chunks}
                       filterMode={chunkFilterMode}
                       onFilterModeChange={setChunkFilterMode}

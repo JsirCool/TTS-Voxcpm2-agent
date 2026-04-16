@@ -74,11 +74,23 @@ async def retry_chunk_stage_flow(
         ep_id, cid, from_stage, cascade, stages_to_run,
     )
 
+    episode_config: dict = {}
+    if "p2" in stages_to_run:
+        from server.flows.worker_bootstrap import bootstrap, _session_factory
+        from server.core.repositories import EpisodeRepo
+
+        if _session_factory is None:
+            bootstrap()
+
+        async with _session_factory() as session:  # type: ignore[misc]
+            episode = await EpisodeRepo(session).get(ep_id)
+            episode_config = (episode.config if episode else None) or {}
+
     for stage in stages_to_run:
         if stage == "p2":
             from server.flows.tasks.p2_synth import p2_synth
 
-            result: P2Result = await p2_synth(cid)
+            result: P2Result = await p2_synth(cid, episode_config or None)
             results["p2"] = result
         elif stage == "p2v":
             from server.flows.tasks.p2v_verify import p2v_verify

@@ -171,17 +171,39 @@ export async function applyEdits(
   edits: Record<string, ChunkEdit>,
 ): Promise<void> {
   for (const [cid, edit] of Object.entries(edits)) {
-    await api.POST("/episodes/{episode_id}/chunks/{chunk_id}/edit", {
-      params: {
-        path: { episode_id: id, chunk_id: cid },
-        query: {
-          text_normalized: edit.textNormalized,
-          subtitle_text: edit.subtitleText,
-        },
-      },
-    });
+    const params = new URLSearchParams();
+    if (edit.textNormalized !== undefined) params.set("text_normalized", edit.textNormalized);
+    if (edit.subtitleText !== undefined) params.set("subtitle_text", edit.subtitleText);
+    if (edit.controlPrompt !== undefined) params.set("control_prompt", edit.controlPrompt);
+    if (edit.clearControlPrompt) params.set("clear_control_prompt", "true");
 
-    const fromStage = edit.textNormalized !== undefined ? "p2" : "p5";
+    const res = await fetch(
+      `${getApiUrl()}/episodes/${encodeURIComponent(id)}/chunks/${encodeURIComponent(cid)}/edit?${params.toString()}`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: process.env.NEXT_PUBLIC_API_TOKEN
+          ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+          : undefined,
+      },
+    );
+    if (!res.ok) {
+      let detail = `请求失败 (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.detail) detail = body.detail;
+      } catch {
+        // ignore parse failure
+      }
+      throw new Error(detail);
+    }
+
+    const fromStage =
+      edit.textNormalized !== undefined
+      || edit.controlPrompt !== undefined
+      || edit.clearControlPrompt
+        ? "p2"
+        : "p5";
     await api.POST("/episodes/{episode_id}/chunks/{chunk_id}/retry", {
       params: {
         path: { episode_id: id, chunk_id: cid },

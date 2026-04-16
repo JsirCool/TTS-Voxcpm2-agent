@@ -12,6 +12,7 @@ export type ChunkFilterMode = "all" | "review" | "staged";
 
 interface Props {
   episodeId: string;
+  episodeConfig: Record<string, unknown>;
   chunks: Chunk[];
   filterMode?: ChunkFilterMode;
   onFilterModeChange?: (mode: ChunkFilterMode) => void;
@@ -34,6 +35,7 @@ function isProblemChunk(chunk: Chunk): boolean {
 
 export function ChunksTable({
   episodeId,
+  episodeConfig,
   chunks,
   filterMode,
   onFilterModeChange,
@@ -90,7 +92,7 @@ export function ChunksTable({
   }
 
   return (
-    <div className="flex flex-col h-full overflow-x-auto">
+    <div className="flex flex-col h-full overflow-x-hidden">
       <div
         className="grid text-[11px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wide border-b border-neutral-100 dark:border-neutral-700 shrink-0"
         style={{ gridTemplateColumns: GRID_COLS }}
@@ -197,6 +199,7 @@ export function ChunksTable({
               >
                 <RowGroup
                   chunk={chunk}
+                  episodeConfig={episodeConfig}
                   displayMode={displayMode}
                   onStageClick={onStageClick ? (stage) => onStageClick(chunk.id, stage) : undefined}
                   onPreviewTake={onPreviewTake ? (takeId) => onPreviewTake(chunk.id, takeId) : undefined}
@@ -217,6 +220,7 @@ export function ChunksTable({
 
 interface RowGroupProps {
   chunk: Chunk;
+  episodeConfig: Record<string, unknown>;
   displayMode: DisplayMode;
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
@@ -229,6 +233,7 @@ interface RowGroupProps {
 
 const RowGroup = memo(function RowGroup({
   chunk,
+  episodeConfig,
   displayMode,
   onStageClick,
   onPreviewTake,
@@ -247,6 +252,7 @@ const RowGroup = memo(function RowGroup({
     <>
       <ChunkRow
         chunk={chunk}
+        episodeConfig={episodeConfig}
         displayMode={displayMode}
         onStageClick={onStageClick}
         onPreviewTake={onPreviewTake}
@@ -259,6 +265,7 @@ const RowGroup = memo(function RowGroup({
       {isEditing ? (
         <ChunkEditor
           chunk={chunk}
+          episodeConfig={episodeConfig}
           initialDraft={edit}
           onStage={(draft) => stageEdit(chunk.id, draft)}
           onCancel={cancelEditing}
@@ -268,6 +275,7 @@ const RowGroup = memo(function RowGroup({
   );
 }, (prev, next) => {
   return prev.chunk === next.chunk
+    && prev.episodeConfig === next.episodeConfig
     && prev.displayMode === next.displayMode
     && prev.processingStage === next.processingStage
     && prev.onStageClick === next.onStageClick

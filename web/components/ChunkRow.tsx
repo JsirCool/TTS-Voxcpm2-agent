@@ -3,6 +3,13 @@
 import { memo, useCallback, useState } from "react";
 import { CHUNK_STAGE_ORDER, type Chunk, type ChunkEdit, type ChunkStatus, type StageName } from "@/lib/types";
 import { STAGE_SHORT_LABEL } from "@/lib/stage-labels";
+import {
+  getEffectiveChunkControlPrompt,
+  getEpisodeControlPrompt,
+  getTtsModeLabel,
+  hasChunkControlPromptOverride,
+  inferTtsMode,
+} from "@/lib/tts-config";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
 import { useHarnessStore } from "@/lib/store";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
@@ -18,6 +25,7 @@ export type DisplayMode = "subtitle" | "tts";
 
 interface Props {
   chunk: Chunk;
+  episodeConfig: Record<string, unknown>;
   displayMode: DisplayMode;
   onStageClick?: (stage: StageName) => void;
   onPreviewTake?: (takeId: string) => void;
@@ -30,7 +38,7 @@ interface Props {
 
 function computeDirty(edit: ChunkEdit | undefined): DirtyType {
   if (!edit) return null;
-  const hasTts = edit.textNormalized !== undefined;
+  const hasTts = edit.textNormalized !== undefined || edit.controlPrompt !== undefined || edit.clearControlPrompt;
   const hasSub = edit.subtitleText !== undefined;
   if (hasTts && hasSub) return "both";
   if (hasTts) return "tts";
@@ -42,10 +50,10 @@ function getReviewSuggestion(chunk: Chunk): string | null {
   if (chunk.status !== "needs_review" && chunk.status !== "failed") return null;
   const diagnosisType = chunk.verifyDiagnosis?.type;
   if (diagnosisType === "speed_anomaly") {
-    return "建议先检查 TTS 源文本和语速，再决定是否重跑配音。";
+    return "建议先检查 TTS 文本和语速，再决定是否重跑配音。";
   }
   if (diagnosisType === "silence_anomaly") {
-    return "建议先试听当前 take，确认静音段后再重跑配音或改稿。";
+    return "建议先试听当前 take，确认静音段后再决定重跑配音或改稿。";
   }
   if (chunk.stageRuns.some((stageRun) => stageRun.stage === "p2v" && stageRun.status === "failed")) {
     return "建议先看复核日志，确认是 WhisperX 不可用还是质量门槛未通过。";
@@ -73,7 +81,7 @@ function statusIcon(status: ChunkStatus) {
     case "failed":
       return <span className="text-red-500">×</span>;
     default:
-      return <span className="text-neutral-300 dark:text-neutral-600">●</span>;
+      return <span className="text-neutral-300 dark:text-neutral-600">○</span>;
   }
 }
 
@@ -101,13 +109,9 @@ function getChunkProgress(chunk: Chunk, processingStage: StageName | null | unde
   };
 }
 
-function getStringParam(params: Record<string, unknown> | undefined, key: string): string {
-  const value = params?.[key];
-  return typeof value === "string" ? value.trim() : "";
-}
-
 export const ChunkRow = memo(function ChunkRow({
   chunk,
+  episodeConfig,
   displayMode,
   onStageClick,
   onPreviewTake,
@@ -128,16 +132,21 @@ export const ChunkRow = memo(function ChunkRow({
 
   const currentTake = chunk.takes.find((take) => take.id === chunk.selectedTakeId);
   const currentTakeParams = (currentTake?.params ?? {}) as Record<string, unknown>;
-  const currentControlPrompt = getStringParam(currentTakeParams, "control_prompt");
-  const currentReferenceAudio = getStringParam(currentTakeParams, "reference_audio_path");
-  const currentPromptAudio = getStringParam(currentTakeParams, "prompt_audio_path");
-  const showControlPrompt = !currentPromptAudio && Boolean(currentTake);
-  const controlPromptValue = currentControlPrompt || "未设置";
-  const currentModeLabel = currentPromptAudio
-    ? "极致克隆"
-    : currentReferenceAudio
-      ? "可控克隆"
-      : "声音设计";
+  const modeSource = Object.keys(episodeConfig ?? {}).length > 0 ? episodeConfig : currentTakeParams;
+  const currentMode = inferTtsMode(modeSource);
+  const showControlPrompt = currentMode !== "ultimate_cloning";
+  const controlPromptValue = (
+    edit?.clearControlPrompt
+      ? getEpisodeControlPrompt(episodeConfig)
+      : edit?.controlPrompt !== undefined
+        ? edit.controlPrompt
+        : getEffectiveChunkControlPrompt(episodeConfig, chunk.metadata)
+  ) || "未设置";
+  const currentModeLabel = getTtsModeLabel(currentMode);
+  const controlPromptOverrideActive = edit?.clearControlPrompt
+    ? false
+    : hasChunkControlPromptOverride(chunk.metadata) || edit?.controlPrompt !== undefined;
+
   const cacheBust = currentTake?.createdAt
     ? `?v=${encodeURIComponent(currentTake.createdAt)}`
     : `?v=${chunk.charCount}`;
@@ -177,9 +186,9 @@ export const ChunkRow = memo(function ChunkRow({
           : "hover:bg-neutral-50 dark:hover:bg-neutral-800";
 
   let dirtyBadge: string | null = null;
-  if (dirty === "tts") dirtyBadge = "TTS 已暂存";
+  if (dirty === "tts") dirtyBadge = "配音已暂存";
   else if (dirty === "subtitle") dirtyBadge = "字幕已暂存";
-  else if (dirty === "both") dirtyBadge = "TTS+字幕已暂存";
+  else if (dirty === "both") dirtyBadge = "配音和字幕已暂存";
 
   const baseColor = isDirty ? "text-amber-900 dark:text-amber-200" : "text-neutral-700 dark:text-neutral-300";
   const reviewSuggestion = getReviewSuggestion(chunk);
@@ -188,10 +197,10 @@ export const ChunkRow = memo(function ChunkRow({
 
   return (
     <div
-      className={`grid border-b border-neutral-100 dark:border-neutral-700 text-sm ${rowBg}`}
+      className={`grid border-b border-neutral-100 dark:border-neutral-700 text-sm overflow-hidden ${rowBg}`}
       style={{ gridTemplateColumns: GRID_COLS }}
     >
-      <div className="px-6 py-2.5 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 self-start">
+      <div className="px-6 py-2.5 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 self-start min-w-0">
         {chunk.id}
         {hasSubtitleField ? (
           <span className="ml-1 text-[9px] text-purple-500" title="已设置 subtitle_text">
@@ -226,15 +235,19 @@ export const ChunkRow = memo(function ChunkRow({
               canPlay
                 ? "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
                 : "text-neutral-300 dark:text-neutral-600 cursor-not-allowed"
-            } ${isPlaying ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200" : ""}`}
+            } ${
+              isPlaying
+                ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
+                : ""
+            }`}
           >
-            {isPlaying ? "❚❚" : "▶"}
+            {isPlaying ? "■" : "▶"}
           </button>
         )}
       </div>
 
-      <div className="py-2.5 pr-6 self-start">
-        <div className="flex items-start flex-wrap">
+      <div className="py-2.5 pr-6 self-start min-w-0">
+        <div className="flex items-start flex-wrap gap-y-1">
           <div className="flex-1 min-w-0">
             <KaraokeSubtitle
               text={displayText}
@@ -253,18 +266,23 @@ export const ChunkRow = memo(function ChunkRow({
         </div>
 
         {chunk.stageRuns.length > 0 ? (
-          <div className="mt-1">
+          <div className="mt-1 min-w-0">
             <StagePipeline stageRuns={chunk.stageRuns} onStageClick={onStageClick} compact />
           </div>
         ) : null}
 
         {showControlPrompt ? (
-          <div className="mt-1 rounded-md border border-violet-200/80 bg-violet-50/70 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/20 dark:text-violet-200">
-            <div className="flex items-center gap-2">
+          <div className="mt-1 rounded-md border border-violet-200/80 bg-violet-50/70 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/20 dark:text-violet-200 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/50 dark:text-violet-200">
                 {currentModeLabel}
               </span>
               <span className="font-semibold">Control Prompt</span>
+              {controlPromptOverrideActive ? (
+                <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-200">
+                  chunk 覆盖
+                </span>
+              ) : null}
             </div>
             <div className="mt-1 break-all font-mono text-[10px] leading-relaxed text-violet-800 dark:text-violet-200/90">
               {controlPromptValue}
@@ -276,7 +294,9 @@ export const ChunkRow = memo(function ChunkRow({
           <div className="mt-1.5 rounded-md border border-sky-200 bg-sky-50/80 px-2 py-1.5 dark:border-sky-900/50 dark:bg-sky-950/20">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">
-                {progressState.isConfirmedRunning ? `${STAGE_SHORT_LABEL[progressState.activeStage]}进行中` : `已提交${STAGE_SHORT_LABEL[progressState.activeStage]}`}
+                {progressState.isConfirmedRunning
+                  ? `${STAGE_SHORT_LABEL[progressState.activeStage]}进行中`
+                  : `已提交 ${STAGE_SHORT_LABEL[progressState.activeStage]}`}
               </span>
               <span className="text-[10px] text-sky-600 dark:text-sky-400">
                 {progressState.completedCount}/{CHUNK_STAGE_ORDER.length}
@@ -340,7 +360,7 @@ export const ChunkRow = memo(function ChunkRow({
           <div className="mt-1">
             <button type="button" onClick={toggleVerify} className="flex items-center gap-1.5 text-[11px] w-full text-left group">
               <span className="text-neutral-400 dark:text-neutral-500 text-[9px] group-hover:text-neutral-600 dark:group-hover:text-neutral-300 transition-colors">
-                {verifyExpanded ? "▾" : "▸"}
+                {verifyExpanded ? "▼" : "▶"}
               </span>
               <span className="font-mono font-bold text-neutral-600 dark:text-neutral-300">
                 {chunk.verifyScores.weightedScore.toFixed(2)}
@@ -387,7 +407,7 @@ export const ChunkRow = memo(function ChunkRow({
                 key={`${attempt.attempt}-${attempt.timestamp}`}
                 attempt={attempt}
                 attemptIndex={index + 1}
-                isCurrent={index === chunk.attemptHistory!.length - 1 && attempt.verdict === "pass"}
+                isCurrent={index === (chunk.attemptHistory?.length ?? 0) - 1 && attempt.verdict === "pass"}
                 onStageClick={onStageClick}
               />
             ))}
@@ -398,13 +418,13 @@ export const ChunkRow = memo(function ChunkRow({
       </div>
 
       <div className="py-2.5 pr-6 self-start text-right">
-        <div className="inline-flex items-center gap-1">
+        <div className="inline-flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => onQuickRetry?.(quickRetryStage)}
             disabled={isProcessing || !onQuickRetry}
-            title={`快捷重跑${quickRetryLabel}`}
-            className={`h-7 px-2 inline-flex items-center justify-center rounded text-[10px] font-semibold ${
+            title={`快捷重跑 ${quickRetryLabel}`}
+            className={`h-8 px-2.5 inline-flex items-center justify-center rounded-md text-[10px] font-semibold ${
               isProcessing || !onQuickRetry
                 ? "bg-neutral-200 dark:bg-neutral-700 text-neutral-400 cursor-wait"
                 : "border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
@@ -416,13 +436,13 @@ export const ChunkRow = memo(function ChunkRow({
             type="button"
             onClick={isEditing ? cancelEditing : onEdit}
             title={isEditing ? "关闭编辑" : "编辑"}
-            className={`h-9 w-9 inline-flex items-center justify-center rounded-md text-[15px] ${
+            className={`h-10 w-10 inline-flex items-center justify-center rounded-lg text-base ${
               isEditing
                 ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
                 : "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
             }`}
           >
-            {isEditing ? "✓" : "✎"}
+            {isEditing ? "×" : "✎"}
           </button>
         </div>
       </div>
@@ -430,6 +450,7 @@ export const ChunkRow = memo(function ChunkRow({
   );
 }, (prev, next) => {
   return prev.chunk === next.chunk
+    && prev.episodeConfig === next.episodeConfig
     && prev.displayMode === next.displayMode
     && prev.processingStage === next.processingStage
     && prev.onStageClick === next.onStageClick
