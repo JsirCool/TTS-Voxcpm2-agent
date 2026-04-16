@@ -253,8 +253,9 @@ export function TtsPresetDialog({ open, onClose, currentConfig, onApplyPreset }:
             accept=".json,application/json"
             className="hidden"
             onChange={async (event) => {
-              const file = event.target.files?.[0];
-              const scope = (event.currentTarget.getAttribute("data-scope") as PresetScope | null) ?? "project";
+              const input = event.currentTarget;
+              const file = input.files?.[0];
+              const scope = (input.getAttribute("data-scope") as PresetScope | null) ?? "project";
               if (!file) return;
               try {
                 const text = (await file.text()).replace(/^\uFEFF/, "");
@@ -266,7 +267,7 @@ export function TtsPresetDialog({ open, onClose, currentConfig, onApplyPreset }:
                   description: describeImportError(error),
                 });
               } finally {
-                event.currentTarget.value = "";
+                input.value = "";
               }
             }}
           />
