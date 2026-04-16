@@ -74,7 +74,12 @@ export function useEpisode(id: string | null): HookResult<Episode> {
       return toEpisode(data!);
     },
     {
-      refreshInterval: (data) => (data?.status === "running" ? 2000 : 0),
+      refreshInterval: (data) => (
+        data?.status === "running"
+        || data?.chunks?.some((chunk) => chunk.stageRuns.some((stageRun) => stageRun.status === "running"))
+          ? 2000
+          : 0
+      ),
     },
   );
 

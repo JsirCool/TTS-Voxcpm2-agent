@@ -127,6 +127,8 @@ export default function Page() {
           stageRun
           && (
             stageRun.status === "running"
+            || stageRun.status === "ok"
+            || stageRun.status === "failed"
             || stageRun.attempt > pending.baselineAttempt
             || (
               typeof stageRun.startedAt === "string"
@@ -151,6 +153,17 @@ export default function Page() {
   useEffect(() => () => {
     for (const timer of Object.values(pendingTimersRef.current)) clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!selectedId || Object.keys(pendingChunkStages).length === 0) return;
+    void mutateDetail();
+    void mutateList();
+    const timer = setInterval(() => {
+      void mutateDetail();
+      void mutateList();
+    }, 1200);
+    return () => clearInterval(timer);
+  }, [mutateDetail, mutateList, pendingChunkStages, selectedId]);
 
   const playableIds = (episode?.chunks ?? [])
     .filter((chunk) => chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review")

@@ -137,14 +137,14 @@ export const ChunkRow = memo(function ChunkRow({
     : (edit?.subtitleText !== undefined ? stripControlMarkers(edit.subtitleText) : getDisplaySubtitle(chunk));
 
   const durationS = currentTake?.durationS ?? 0;
-  const player = useAudioPlayer(chunk.id, durationS);
+  const player = useAudioPlayer(chunk.id, durationS, audioUrl);
   const { isPlaying } = player;
 
   const [verifyExpanded, setVerifyExpanded] = useState(false);
   const toggleVerify = useCallback(() => setVerifyExpanded((value) => !value), []);
 
   const hasAudio = chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review";
-  const canPlay = hasAudio && !isDirty;
+  const canPlay = hasAudio && Boolean(audioUrl) && !isDirty;
   const needsSynth = chunk.status === "pending" && !isDirty;
   const onEdit = () => startEditing(chunk.id);
   const progressState = getChunkProgress(chunk, processingStage);
@@ -252,6 +252,15 @@ export const ChunkRow = memo(function ChunkRow({
                 {progressState.completedCount}/{CHUNK_STAGE_ORDER.length}
               </span>
             </div>
+            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-sky-100 dark:bg-sky-950/60">
+              <div
+                className={[
+                  "h-full rounded-full transition-[width] duration-700 ease-out",
+                  progressState.isConfirmedRunning ? "bg-sky-500 animate-pulse" : "bg-sky-400",
+                ].join(" ")}
+                style={{ width: `${progressState.progressPercent}%` }}
+              />
+            </div>
             <div className="mt-1.5 flex gap-1">
               {CHUNK_STAGE_ORDER.map((stage, index) => {
                 const isComplete = index < progressState.currentIndex
@@ -355,7 +364,7 @@ export const ChunkRow = memo(function ChunkRow({
           </div>
         ) : null}
 
-        {audioUrl ? <audio key={audioUrl} ref={player.ref} src={audioUrl} preload="metadata" className="hidden" /> : null}
+        {audioUrl ? <audio ref={player.ref} src={audioUrl} preload="metadata" className="hidden" /> : null}
       </div>
 
       <div className="py-2.5 pr-6 self-start text-right">

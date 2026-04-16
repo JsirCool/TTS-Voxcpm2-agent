@@ -10,7 +10,7 @@ interface AudioPlayer {
   seekTo: (timeS: number) => void;
 }
 
-export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer {
+export function useAudioPlayer(chunkId: string, durationS: number, audioUrl: string): AudioPlayer {
   const ref = useRef<HTMLAudioElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
 
@@ -48,7 +48,14 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
       el.removeEventListener("pause", onPause);
       el.removeEventListener("ended", onEnded);
     };
-  }, [setPlayingChunkId, advanceToNext]);
+  }, [audioUrl, setPlayingChunkId, advanceToNext]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    stopExclusiveAudio(el);
+    setCurrentTime(0);
+  }, [audioUrl]);
 
   // Sync playbackRate to audio element
   useEffect(() => {
@@ -58,7 +65,7 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
   // When isPlaying changes: pause if false, auto-play if true (for continuous mode)
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || !audioUrl) return;
     let cancelled = false;
     let onLoadedMetadata: (() => void) | null = null;
     if (!isPlaying) {
@@ -83,22 +90,22 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
         el.removeEventListener("loadedmetadata", onLoadedMetadata);
       }
     };
-  }, [isPlaying, playbackRate]);
+  }, [audioUrl, isPlaying, playbackRate]);
 
   const ensureReady = useCallback(async () => {
     const el = ref.current;
-    if (!el) return null;
+    if (!el || !audioUrl) return null;
     if (el.readyState < 1) {
       await new Promise<void>((resolve) =>
         el.addEventListener("loadedmetadata", () => resolve(), { once: true })
       );
     }
     return el;
-  }, []);
+  }, [audioUrl]);
 
   const toggle = useCallback(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!el || !audioUrl) return;
     if (isPlaying) {
       setPlayingChunkId(null);
     } else {
@@ -110,10 +117,11 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
         }
       });
     }
-  }, [chunkId, isPlaying, setPlayingChunkId, ensureReady, playbackRate]);
+  }, [audioUrl, chunkId, isPlaying, setPlayingChunkId, ensureReady, playbackRate]);
 
   const seekTo = useCallback((timeS: number) => {
     const target = Math.max(0, Math.min(durationS, timeS));
+    if (!audioUrl) return;
     setPlayingChunkId(chunkId);
     ensureReady().then((el) => {
       if (!el) return;
@@ -122,7 +130,7 @@ export function useAudioPlayer(chunkId: string, durationS: number): AudioPlayer 
       setCurrentTime(target);
       playExclusiveAudio(el).catch(() => {});
     });
-  }, [chunkId, durationS, setPlayingChunkId, ensureReady, playbackRate]);
+  }, [audioUrl, chunkId, durationS, setPlayingChunkId, ensureReady, playbackRate]);
 
   return { ref, currentTime, isPlaying, toggle, seekTo };
 }
