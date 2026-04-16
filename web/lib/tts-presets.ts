@@ -36,6 +36,10 @@ const CONFIG_KEYS = [
   "denoise",
 ] as const;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function sanitizeTtsConfig(input: Record<string, unknown>): Record<string, unknown> {
   const next: Record<string, unknown> = {};
   for (const key of CONFIG_KEYS) {
@@ -45,6 +49,34 @@ export function sanitizeTtsConfig(input: Record<string, unknown>): Record<string
     next[key] = value;
   }
   return next;
+}
+
+export function normalizeImportedPresetPayload(input: unknown): Record<string, unknown> {
+  if (Array.isArray(input)) {
+    return { presets: input };
+  }
+
+  if (!isRecord(input)) {
+    throw new Error("导入文件不是有效的 JSON 对象");
+  }
+
+  if (Array.isArray(input.presets)) {
+    return input;
+  }
+
+  if (isRecord(input.data)) {
+    return normalizeImportedPresetPayload(input.data);
+  }
+
+  if (Array.isArray(input.items)) {
+    return { ...input, presets: input.items };
+  }
+
+  if (Array.isArray(input.presetList)) {
+    return { ...input, presets: input.presetList };
+  }
+
+  throw new Error("导入文件缺少 presets 数组");
 }
 
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -97,7 +129,7 @@ export function useTtsPresets() {
       body: JSON.stringify({
         name,
         config: sanitizeTtsConfig(config),
-        makeDefault: makeDefault,
+        makeDefault,
       }),
     });
     await swr.mutate();
