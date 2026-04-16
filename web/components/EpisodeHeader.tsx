@@ -17,21 +17,38 @@ interface Props {
   onCancel?: () => void;
   cancelPending?: boolean;
   onViewScript?: () => void;
+  onExportLocal?: () => void;
   failedCount?: number;
+  reviewCount?: number;
+  stagedChunkCount?: number;
+  lastRunId?: string | null;
 }
 
 const STATUS_BADGE: Record<
   EpisodeStatus,
   { bg: string; fg: string; br: string; label: string }
 > = {
-  done: { bg: "bg-emerald-50 dark:bg-emerald-900/30", fg: "text-emerald-700 dark:text-emerald-400", br: "border-emerald-200 dark:border-emerald-800", label: "done" },
-  running: { bg: "bg-blue-50 dark:bg-blue-900/30", fg: "text-blue-700 dark:text-blue-400", br: "border-blue-200 dark:border-blue-800", label: "running" },
-  ready: { bg: "bg-neutral-50 dark:bg-neutral-800", fg: "text-neutral-600 dark:text-neutral-400", br: "border-neutral-200 dark:border-neutral-700", label: "ready" },
-  failed: { bg: "bg-red-50 dark:bg-red-900/30", fg: "text-red-700 dark:text-red-400", br: "border-red-200 dark:border-red-800", label: "failed" },
-  empty: { bg: "bg-neutral-50 dark:bg-neutral-800", fg: "text-neutral-500 dark:text-neutral-400", br: "border-neutral-200 dark:border-neutral-700", label: "empty" },
+  done: { bg: "bg-emerald-50 dark:bg-emerald-900/30", fg: "text-emerald-700 dark:text-emerald-400", br: "border-emerald-200 dark:border-emerald-800", label: "已完成" },
+  running: { bg: "bg-blue-50 dark:bg-blue-900/30", fg: "text-blue-700 dark:text-blue-400", br: "border-blue-200 dark:border-blue-800", label: "运行中" },
+  ready: { bg: "bg-neutral-50 dark:bg-neutral-800", fg: "text-neutral-600 dark:text-neutral-400", br: "border-neutral-200 dark:border-neutral-700", label: "就绪" },
+  failed: { bg: "bg-red-50 dark:bg-red-900/30", fg: "text-red-700 dark:text-red-400", br: "border-red-200 dark:border-red-800", label: "失败" },
+  empty: { bg: "bg-neutral-50 dark:bg-neutral-800", fg: "text-neutral-500 dark:text-neutral-400", br: "border-neutral-200 dark:border-neutral-700", label: "空白" },
 };
 
-export function EpisodeHeader({ episode, running, runPending = false, onRun, onCancel, cancelPending = false, onViewScript, failedCount = 0 }: Props) {
+export function EpisodeHeader({
+  episode,
+  running,
+  runPending = false,
+  onRun,
+  onCancel,
+  cancelPending = false,
+  onViewScript,
+  onExportLocal,
+  failedCount = 0,
+  reviewCount = 0,
+  stagedChunkCount = 0,
+  lastRunId = null,
+}: Props) {
   const badge = STATUS_BADGE[episode.status] ?? STATUS_BADGE.ready;
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [regenConfirmOpen, setRegenConfirmOpen] = useState(false);
@@ -70,7 +87,7 @@ export function EpisodeHeader({ episode, running, runPending = false, onRun, onC
       case "done":
         return { label: "完成 ✓", disabled: true, mode: "" };
       default:
-        return { label: "Run", disabled: true, mode: "" };
+        return { label: "不可执行", disabled: true, mode: "" };
     }
   })();
 
@@ -79,17 +96,32 @@ export function EpisodeHeader({ episode, running, runPending = false, onRun, onC
       <div className="flex items-center gap-3 mb-2">
         <h2 className="text-lg font-semibold">{episode.title}</h2>
         <span className="text-xs text-neutral-400 dark:text-neutral-500 font-mono">{episode.id}</span>
+        {lastRunId ? (
+          <span className="text-[11px] text-neutral-400 dark:text-neutral-500 font-mono">
+            run {lastRunId.slice(0, 8)}
+          </span>
+        ) : null}
         <span className={`text-xs px-2 py-0.5 rounded-full border ${badge.bg} ${badge.fg} ${badge.br}`}>
           {badge.label}
         </span>
+        {reviewCount > 0 ? (
+          <span className="text-xs px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+            待人工复核 {reviewCount}
+          </span>
+        ) : null}
+        {stagedChunkCount > 0 ? (
+          <span className="text-xs px-2 py-0.5 rounded-full border border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+            已暂存修改 {stagedChunkCount}
+          </span>
+        ) : null}
         <span className="ml-auto text-[11px] text-neutral-400 dark:text-neutral-500 font-mono">
-          {episode.chunks.length} chunks · {totalDurationS.toFixed(1)}s
+          {episode.chunks.length} 个 chunk · {totalDurationS.toFixed(1)}s
         </span>
       </div>
       <div className="flex gap-2 items-center">
         {episode.locked ? (
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400">
-            <Lock size={12} /> Locked
+            <Lock size={12} /> 已锁定
           </span>
         ) : (
         <>
@@ -193,7 +225,7 @@ export function EpisodeHeader({ episode, running, runPending = false, onRun, onC
                     const blob = await res.blob();
                     const a = document.createElement("a");
                     a.href = URL.createObjectURL(blob);
-                    a.download = `${episode.id}-export.zip`;
+                    a.download = `${episode.id}-remotion-assets.zip`;
                     a.click();
                     URL.revokeObjectURL(a.href);
                   } catch (e) {
@@ -203,7 +235,12 @@ export function EpisodeHeader({ episode, running, runPending = false, onRun, onC
                   }
                 }}
               >
-                {exporting ? "导出中..." : "导出产物 (.zip)"}
+                {exporting ? "导出中..." : "导出 Remotion 素材包 (.zip)"}
+              </DropdownMenuItem>
+            )}
+            {episode.status === "done" && onExportLocal && (
+              <DropdownMenuItem onClick={onExportLocal}>
+                导出到本地目录
               </DropdownMenuItem>
             )}
             {episode.status === "failed" && !running && (

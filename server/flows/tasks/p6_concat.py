@@ -3,8 +3,9 @@
 Responsibilities (see A7-P6 brief and ADR-002 §4.4):
 
 1. Load every chunk of the episode from the business DB.
-2. Verify all chunks have a ``selected_take_id`` (otherwise the episode is
-   not ready for finalization — raise ``DomainError('invalid_state')``).
+2. Verify every chunk is already ``verified`` and has a ``selected_take_id``
+   (otherwise the episode is not ready for finalization — raise
+   ``DomainError('invalid_state')``).
 3. Order chunks by ``(shot_id, idx)``, download each take WAV and each
    chunk SRT from MinIO into a scratch directory.
 4. Generate the two silence segments (``padding_ms`` / ``shot_gap_ms``)
@@ -59,6 +60,13 @@ from server.core.storage import (
 )
 
 log = logging.getLogger(__name__)
+
+_WINDOWS_RESERVED_CHARS = '<>:"/\\\\|?*'
+
+
+def _safe_work_filename(name: str) -> str:
+    """Return a filesystem-safe basename for temp workdir artifacts."""
+    return "".join("_" if ch in _WINDOWS_RESERVED_CHARS else ch for ch in name)
 
 
 async def _emit_stage_failed(
@@ -170,6 +178,15 @@ async def run_p6_concat(
         await _emit_stage_failed(_sf, episode_id=episode_id, error=f"episode has no chunks: {episode_id}")
         raise DomainError("invalid_state", f"episode has no chunks: {episode_id}")
 
+    unverified = [c.id for c in chunks if c.status != "verified"]
+    if unverified:
+        msg = f"chunks not verified: {unverified}"
+        await _emit_stage_failed(_sf, episode_id=episode_id, error=msg)
+        raise DomainError(
+            "invalid_state",
+            msg,
+        )
+
     missing = [c.id for c in chunks if not c.selected_take_id]
     if missing:
         msg = f"chunks missing selected_take_id: {missing}"
@@ -263,7 +280,7 @@ async def run_p6_concat(
                     f"take wav not in object store: {wav_key}",
                 )
             wav_bytes = await storage.download_bytes(wav_key)
-            wav_path = work_root / f"{timing.chunk_id}.wav"
+            wav_path = work_root / f"{_safe_work_filename(timing.chunk_id)}.wav"
             wav_path.write_bytes(wav_bytes)
             audio_paths.append(wav_path)
 

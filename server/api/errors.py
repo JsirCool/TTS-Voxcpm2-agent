@@ -27,7 +27,11 @@ _STATUS_MAP: dict[str, int] = {
     "not_found": 404,
     "auth_required": 401,
     "invalid_input": 422,
+    "invalid_path": 422,
+    "path_not_found": 422,
     "invalid_state": 409,
+    "preset_not_found": 404,
+    "preset_conflict": 409,
     "lock_busy": 423,
     "internal": 500,
 }

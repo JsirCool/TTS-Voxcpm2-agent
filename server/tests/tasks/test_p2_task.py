@@ -42,10 +42,10 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from server.core.domain import ChunkInput, DomainError, EpisodeCreate, FishTTSParams
-from server.core.fish_client import FishAuthError, FishTTSClient
 from server.core.models import Base, Chunk, Event, Take
 from server.core.repositories import ChunkRepo, EpisodeRepo
 from server.core.storage import chunk_take_key
+from server.core.voxcpm_client import VoxCPMUnavailableError
 from server.flows.tasks import p2_synth as p2_module
 from server.flows.tasks.p2_synth import run_p2_synth
 
@@ -96,8 +96,8 @@ class FakeStorage:
         return self.s3_uri(key)
 
 
-class FakeFishClient:
-    """Drop-in for :class:`FishTTSClient` used in tests.
+class FakeVoxCPMClient:
+    """Drop-in for the local P2 client used in tests.
 
     Supports pluggable ``response_factory`` and ``raise_exc`` so a single
     test can configure the behaviour it needs.
@@ -179,22 +179,29 @@ def storage() -> FakeStorage:
 
 
 @pytest.fixture()
-def fake_fish() -> FakeFishClient:
-    return FakeFishClient()
+def fake_voxcpm() -> FakeVoxCPMClient:
+    return FakeVoxCPMClient()
 
 
 @pytest.fixture(autouse=True)
-def wire_p2_deps(seeded, storage, fake_fish, monkeypatch):
+def wire_p2_deps(seeded, storage, fake_voxcpm, monkeypatch):
     """Hook injected dependencies into the p2_synth module.
 
     ``autouse=True`` guarantees that each test starts with a freshly
     wired p2 module and leaves no globals behind.
     """
     # Clear env so build_params_from_env is predictable.
-    monkeypatch.delenv("FISH_TTS_REFERENCE_ID", raising=False)
-    monkeypatch.delenv("FISH_TTS_MODEL", raising=False)
+    monkeypatch.delenv("VOXCPM_REFERENCE_AUDIO_PATH", raising=False)
+    monkeypatch.delenv("VOXCPM_PROMPT_AUDIO_PATH", raising=False)
+    monkeypatch.delenv("VOXCPM_PROMPT_TEXT", raising=False)
+    monkeypatch.delenv("VOXCPM_CONTROL_PROMPT", raising=False)
+    monkeypatch.delenv("VOXCPM_CFG_VALUE", raising=False)
+    monkeypatch.delenv("VOXCPM_INFERENCE_TIMESTEPS", raising=False)
+    monkeypatch.delenv("VOXCPM_MAX_LEN", raising=False)
+    monkeypatch.delenv("VOXCPM_NORMALIZE", raising=False)
+    monkeypatch.delenv("VOXCPM_DENOISE", raising=False)
 
-    holder = {"client": fake_fish}
+    holder = {"client": fake_voxcpm}
 
     def factory():
         return holder["client"]
@@ -202,13 +209,13 @@ def wire_p2_deps(seeded, storage, fake_fish, monkeypatch):
     p2_module.configure_p2_dependencies(
         session_factory=seeded,
         storage=storage,  # type: ignore[arg-type]
-        fish_client_factory=factory,
+        voxcpm_client_factory=factory,
     )
     yield
     # teardown: reset module globals.
     p2_module._session_factory = None
     p2_module._storage = None
-    p2_module._fish_client_factory = None
+    p2_module._voxcpm_client_factory = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +248,7 @@ async def _list_takes(session_factory) -> list[Take]:
 
 
 async def test_happy_path_transitions_chunk_and_writes_take(
-    seeded, storage, fake_fish
+    seeded, storage, fake_voxcpm
 ):
     result = await run_p2_synth(CHUNK_ID)
 
@@ -251,7 +258,7 @@ async def test_happy_path_transitions_chunk_and_writes_take(
     assert result.audio_uri.startswith("s3://tts-harness/")
     assert result.audio_uri.endswith(".wav")
     assert result.duration_s > 0
-    assert result.params["model"] == "s2-pro"
+    assert result.params["model"] == "voxcpm2"
 
     # Chunk state advanced.
     chunk = await _load_chunk(seeded)
@@ -270,7 +277,7 @@ async def test_happy_path_transitions_chunk_and_writes_take(
     # MinIO received the bytes at the canonical key.
     expected_key = chunk_take_key(EP_ID, CHUNK_ID, result.take_id)
     assert expected_key in storage.uploads
-    assert storage.uploads[expected_key] == fake_fish._wav
+    assert storage.uploads[expected_key] == fake_voxcpm._wav
 
     # Events: stage_started, stage_finished, take_appended.
     events = await _list_events(seeded)
@@ -284,8 +291,8 @@ async def test_happy_path_transitions_chunk_and_writes_take(
     assert finished.payload["take_id"] == result.take_id
 
     # Fish was called with the normalized text.
-    assert len(fake_fish.calls) == 1
-    text, params = fake_fish.calls[0]
+    assert len(fake_voxcpm.calls) == 1
+    text, params = fake_voxcpm.calls[0]
     assert text == "Hello, world."
     assert isinstance(params, FishTTSParams)
 
@@ -319,12 +326,14 @@ async def test_empty_text_normalized_raises_domain_error(
     assert takes == []
 
 
-async def test_fish_auth_error_leaves_chunk_pending_and_emits_stage_failed(
-    seeded, fake_fish
+async def test_voxcpm_unavailable_leaves_chunk_pending_and_emits_stage_failed(
+    seeded, fake_voxcpm
 ):
-    fake_fish._raise_exc = FishAuthError("bad key", status_code=401)
+    fake_voxcpm._raise_exc = VoxCPMUnavailableError(
+        "service unavailable", status_code=503
+    )
 
-    with pytest.raises(FishAuthError):
+    with pytest.raises(VoxCPMUnavailableError):
         await run_p2_synth(CHUNK_ID)
 
     chunk = await _load_chunk(seeded)
@@ -342,7 +351,7 @@ async def test_fish_auth_error_leaves_chunk_pending_and_emits_stage_failed(
 
 
 async def test_minio_upload_failure_leaves_chunk_pending(
-    seeded, storage, fake_fish
+    seeded, storage, fake_voxcpm
 ):
     storage.fail_next_upload = RuntimeError("minio boom")
 
@@ -350,7 +359,7 @@ async def test_minio_upload_failure_leaves_chunk_pending(
         await run_p2_synth(CHUNK_ID)
 
     # Fish was still called.
-    assert len(fake_fish.calls) == 1
+    assert len(fake_voxcpm.calls) == 1
 
     chunk = await _load_chunk(seeded)
     assert chunk.status == "pending"
@@ -365,11 +374,11 @@ async def test_minio_upload_failure_leaves_chunk_pending(
     assert "stage_failed" in kinds
 
 
-async def test_custom_params_dict_is_merged_into_call(seeded, fake_fish):
+async def test_custom_params_dict_is_merged_into_call(seeded, fake_voxcpm):
     result = await run_p2_synth(
         CHUNK_ID, {"temperature": 0.2, "reference_id": "voice-x"}
     )
-    _, used_params = fake_fish.calls[-1]
+    _, used_params = fake_voxcpm.calls[-1]
     assert used_params.temperature == 0.2
     assert used_params.reference_id == "voice-x"
     # Result params reflect the merged view.
@@ -377,11 +386,11 @@ async def test_custom_params_dict_is_merged_into_call(seeded, fake_fish):
     assert result.params["reference_id"] == "voice-x"
 
 
-async def test_p2_synth_task_decorator_has_fish_api_tag_and_retries():
+async def test_p2_synth_task_decorator_has_voxcpm_tag_and_retries():
     """Lock in ADR-001 §4.3 contract: tag + retries are not a drive-by change."""
     from server.flows.tasks.p2_synth import p2_synth
 
-    assert "fish-api" in p2_synth.tags
+    assert "voxcpm-local" in p2_synth.tags
     assert p2_synth.retries == 3
     assert list(p2_synth.retry_delay_seconds) == [2, 8, 32]
     assert p2_synth.name == "p2-synth"

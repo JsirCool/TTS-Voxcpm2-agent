@@ -16,6 +16,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TtsPresetDialog } from "./TtsPresetDialog";
 
 interface Props {
   episodeId: string;
@@ -194,6 +195,7 @@ export function TtsConfigBar({
   onUpdateConfig,
 }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const [savedHint, setSavedHint] = useState(false);
 
   const hasOverride = Object.keys(config).length > 0;
@@ -218,34 +220,42 @@ export function TtsConfigBar({
     <>
       <div className="flex flex-wrap items-center gap-4 border-b border-neutral-200 bg-neutral-50 px-6 py-1.5 text-[11px] dark:border-neutral-700 dark:bg-neutral-800">
         <span className="shrink-0 font-semibold text-neutral-500 dark:text-neutral-400">
-          TTS Config:
+          TTS 配置：
         </span>
         {field("mode", MODE_META[mode].title)}
         {field("cfg", String(config.cfg_value ?? "2.0"))}
         {field("steps", String(config.inference_timesteps ?? "10"))}
         {mode !== "ultimate_cloning"
-          ? field("control", String(config.control_prompt || "(none)"))
+          ? field("control", String(config.control_prompt || "未设置"))
           : null}
         {mode === "controllable_cloning"
-          ? field("reference", String(config.reference_audio_path || "(none)"))
+          ? field("reference", String(config.reference_audio_path || "未设置"))
           : null}
         {mode === "ultimate_cloning"
-          ? field("prompt", String(config.prompt_audio_path || "(none)"))
+          ? field("prompt", String(config.prompt_audio_path || "未设置"))
           : null}
         {mode !== "voice_design"
           ? field("denoise", Boolean(config.denoise ?? false) ? "on" : "off")
           : null}
         <button
           type="button"
+          onClick={() => setPresetDialogOpen(true)}
+          className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-white dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:bg-neutral-700"
+          title="打开 TTS 预设库"
+        >
+          预设
+        </button>
+        <button
+          type="button"
           onClick={() => setDialogOpen(true)}
           className="ml-auto rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-white dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:bg-neutral-700"
-          title="Edit TTS Config"
+          title="编辑 TTS 配置"
         >
-          Edit
+          编辑
         </button>
         {hasOverride ? (
           <span className="font-mono text-[10px] text-blue-600 dark:text-blue-400">
-            override
+            已覆盖默认值
           </span>
         ) : null}
       </div>
@@ -275,6 +285,18 @@ export function TtsConfigBar({
           />
         </DialogContent>
       </Dialog>
+
+      <TtsPresetDialog
+        open={presetDialogOpen}
+        onClose={() => setPresetDialogOpen(false)}
+        currentConfig={config}
+        onApplyPreset={async (nextConfig) => {
+          await onUpdateConfig(episodeId, nextConfig);
+          onConfigSaved?.();
+          setSavedHint(true);
+          setTimeout(() => setSavedHint(false), 6000);
+        }}
+      />
     </>
   );
 }

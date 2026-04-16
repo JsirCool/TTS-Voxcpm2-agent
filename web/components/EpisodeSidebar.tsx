@@ -25,6 +25,14 @@ const STATUS_DOT: Record<EpisodeStatus, string> = {
   empty: "bg-neutral-200 dark:bg-neutral-600",
 };
 
+const STATUS_LABEL: Record<EpisodeStatus, string> = {
+  done: "已完成",
+  running: "运行中",
+  ready: "就绪",
+  failed: "失败",
+  empty: "空白",
+};
+
 export function EpisodeSidebar({
   episodes, selectedId, collapsed, onToggleCollapse, onSelect, onNewEpisode, onDelete, onDuplicate, onArchive, error,
 }: Props) {
@@ -54,7 +62,7 @@ export function EpisodeSidebar({
                     ? "bg-neutral-900 dark:bg-white"
                     : "hover:bg-neutral-100 dark:hover:bg-neutral-800"
                 }`}
-                title={`${ep.title} (${ep.status})`}
+                title={`${ep.title}（${STATUS_LABEL[ep.status] ?? ep.status}）`}
               >
                 <span className={`w-2 h-2 rounded-full ${dotClass}`} />
               </button>
@@ -71,9 +79,9 @@ export function EpisodeSidebar({
   return (
     <aside className="w-56 border-r border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex flex-col shrink-0">
       <div className="px-3 py-3 flex items-center justify-between border-b border-neutral-100 dark:border-neutral-700">
-        <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">Episodes</span>
+        <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">剧集列表</span>
         <div className="flex items-center gap-1">
-          <button type="button" onClick={onNewEpisode} className="text-xs px-2 py-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400">+ New</button>
+          <button type="button" onClick={onNewEpisode} className="text-xs px-2 py-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400">+ 新建</button>
           <button
             type="button"
             onClick={onToggleCollapse}
@@ -94,7 +102,7 @@ export function EpisodeSidebar({
         {episodes.map((ep) => {
           const sel = ep.id === selectedId;
           const dotClass = STATUS_DOT[ep.status] ?? "bg-neutral-300";
-          const suffix = ep.status === "running" ? "..." : ep.status === "done" ? `${ep.doneCount}/${ep.chunkCount}` : ep.status;
+          const suffix = ep.status === "done" ? `${ep.doneCount}/${ep.chunkCount}` : STATUS_LABEL[ep.status];
           const hasMenu = onDelete || onDuplicate || onArchive;
           return (
             <div key={ep.id} className={`w-full text-left px-2.5 py-2 rounded flex items-center gap-2 mb-0.5 ${sel ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900" : "hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>
@@ -121,7 +129,7 @@ export function EpisodeSidebar({
           );
         })}
       </div>
-      <div className="p-3 border-t border-neutral-100 dark:border-neutral-700 text-[11px] text-neutral-400 dark:text-neutral-500 font-mono">{episodes.length} episodes</div>
+      <div className="p-3 border-t border-neutral-100 dark:border-neutral-700 text-[11px] text-neutral-400 dark:text-neutral-500 font-mono">{episodes.length} 集</div>
     </aside>
   );
 }

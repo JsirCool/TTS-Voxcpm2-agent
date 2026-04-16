@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getApiUrl } from "@/lib/api-client";
+import { ScriptPreview } from "./ScriptPreview";
 
 interface Props {
   episodeId: string;
@@ -29,6 +30,15 @@ export function ScriptPreviewDialog({ episodeId, open, onClose }: Props) {
 
   if (!open) return null;
 
+  const parsedScript =
+    raw && typeof raw === "object" && raw !== null && Array.isArray((raw as { segments?: unknown }).segments)
+      ? (raw as {
+          title?: string;
+          description?: string;
+          segments: Array<{ id: string | number; type?: string; topic?: string; text: string }>;
+        })
+      : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
@@ -50,11 +60,17 @@ export function ScriptPreviewDialog({ episodeId, open, onClose }: Props) {
           {loading && <p className="text-sm text-neutral-400">加载中...</p>}
           {error && <p className="text-sm text-red-500">加载失败: {error}</p>}
 
-          {raw != null && (
+          {parsedScript ? (
+            <ScriptPreview
+              title={parsedScript.title}
+              description={parsedScript.description}
+              segments={parsedScript.segments}
+            />
+          ) : raw != null ? (
             <pre className="text-xs font-mono bg-neutral-50 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-200 dark:border-neutral-700 rounded p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">
               {JSON.stringify(raw, null, 2)}
             </pre>
-          )}
+          ) : null}
 
         </div>
 

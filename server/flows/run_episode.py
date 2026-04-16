@@ -260,6 +260,9 @@ async def _run_synthesize(
 
     if not verified_ids:
         log.warning("No verified chunks — skipping P5/P6")
+        async with _session_factory() as session:
+            await EpisodeRepo(session).set_status(episode_id, "ready")
+            await session.commit()
         return {
             "mode": "synthesize",
             "synthesized": len(need_p2_ids),
@@ -273,6 +276,24 @@ async def _run_synthesize(
     p5_futures = p5_subtitles.map(verified_ids)
     [await f.result() for f in p5_futures]
     log.info("P5 complete: %d subtitles", len(verified_ids))
+
+    async with _session_factory() as session:
+        chunk_repo = ChunkRepo(session)
+        ready_for_concat = await chunk_repo.list_by_episode(episode_id)
+    unverified_ids = [c.id for c in ready_for_concat if c.status != "verified"]
+    if unverified_ids:
+        log.warning("Skipping P6 because %d chunk(s) still need review", len(unverified_ids))
+        async with _session_factory() as session:
+            await EpisodeRepo(session).set_status(episode_id, "ready")
+            await session.commit()
+        return {
+            "mode": "synthesize",
+            "synthesized": len(need_p2_ids),
+            "skipped_p2": len(skip_p2),
+            "verified": len(verified_ids),
+            "needs_review": len(unverified_ids),
+            "total": len(ready_for_concat),
+        }
 
     # P6: concat (always runs on full episode, not just targets)
     p6_result: P6Result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
@@ -352,6 +373,18 @@ async def _run_retry_failed(
         p5_futures = p5_subtitles.map(verified_ids)
         [await f.result() for f in p5_futures]
 
+    unverified_ids = [c.id for c in refreshed if c.status != "verified"]
+    if unverified_ids:
+        async with _session_factory() as session:
+            await EpisodeRepo(session).set_status(episode_id, "ready")
+            await session.commit()
+        return {
+            "mode": "retry_failed",
+            "retried": len(retry_ids),
+            "verified": len(verified_ids),
+            "needs_review": len(unverified_ids),
+        }
+
     # P6: re-concat full episode
     p6_result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
     log.info("P6 complete after retry: %s", p6_result.wav_uri)
@@ -418,6 +451,18 @@ async def _run_regenerate(
     if verified_ids:
         p5_futures = p5_subtitles.map(verified_ids)
         [await f.result() for f in p5_futures]
+
+    unverified_ids = [c.id for c in refreshed if c.status != "verified"]
+    if unverified_ids:
+        async with _session_factory() as session:
+            await EpisodeRepo(session).set_status(episode_id, "ready")
+            await session.commit()
+        return {
+            "mode": "regenerate",
+            "chunk_count": len(chunk_ids),
+            "verified": len(verified_ids),
+            "needs_review": len(unverified_ids),
+        }
 
     p6_result = await p6_concat(episode_id, padding_ms=padding_ms, shot_gap_ms=shot_gap_ms)
 

@@ -44,6 +44,7 @@ export function ChunkEditor({
 
   const isReview = chunk.status === "needs_review";
   const diagnosis = chunk.verifyDiagnosis;
+  const latestAttempt = chunk.attemptHistory?.[chunk.attemptHistory.length - 1];
 
   // Focus + auto-resize when entering edit mode
   useEffect(() => {
@@ -92,6 +93,13 @@ export function ChunkEditor({
     }
   }
 
+  let reviewAction = "建议先试听当前 take，再决定是重跑还是手工修改。";
+  if (diagnosis?.type === "speed_anomaly") {
+    reviewAction = "建议优先检查 TTS 源文本和语速，再重跑 P2。";
+  } else if (diagnosis?.type === "silence_anomaly") {
+    reviewAction = "建议优先检查静音段或停顿，再决定是否重跑 P2。";
+  }
+
   const subPlaceholder = "未设置，兜底用 text";
   const subDisplayEmpty = !subValue;
 
@@ -111,6 +119,9 @@ export function ChunkEditor({
           </strong>
           {" · "}
           {reviewBannerParts.join(" · ")}
+          <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+            建议动作：{reviewAction}
+          </div>
         </div>
       )}
 
@@ -160,9 +171,15 @@ export function ChunkEditor({
       </FieldRow>
 
       {/* Field: 原文 (readonly) */}
-      <FieldRow label="原文" fieldKey="text" hint="只读" isLast>
+      <FieldRow label="原文" fieldKey="text" hint="只读">
         <div className="text-[11px] text-neutral-400 dark:text-neutral-500 leading-relaxed px-1 py-0.5 min-h-[18px] whitespace-pre-wrap break-words cursor-default">
           {chunk.text}
+        </div>
+      </FieldRow>
+
+      <FieldRow label="ASR 回写" fieldKey="transcribed_text" hint="只读" isLast>
+        <div className="text-[11px] text-neutral-500 dark:text-neutral-400 leading-relaxed px-1 py-0.5 min-h-[18px] whitespace-pre-wrap break-words cursor-default">
+          {latestAttempt?.transcribedText || "还没有可对照的 WhisperX 回写结果"}
         </div>
       </FieldRow>
 
@@ -170,14 +187,14 @@ export function ChunkEditor({
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-neutral-100 dark:border-neutral-700 flex-wrap">
         <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={handleStage}
           className="text-[11px] font-medium px-2.5 py-1 bg-amber-500 text-white rounded hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700">
-          Stage Change
+          暂存修改
         </button>
         <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onCancel}
           className="text-[11px] px-2 py-1 rounded text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-700 dark:hover:text-neutral-300">
-          Cancel
+          关闭
         </button>
         <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500">
-          暂存，顶部 Apply All 统一执行
+          这里只做暂存，顶部“统一应用”后才会真正执行
         </span>
       </div>
     </div>

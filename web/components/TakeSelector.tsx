@@ -25,7 +25,7 @@ export function TakeSelector({
   return (
     <div className="mt-1.5 border border-neutral-200 dark:border-neutral-700 rounded bg-neutral-50 dark:bg-neutral-800 p-1.5 text-[11px]">
       <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1 px-1 flex items-center gap-1">
-        Takes ({takes.length})
+        Take 历史（{takes.length}）
         <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -34,8 +34,8 @@ export function TakeSelector({
             <TooltipContent side="right">
               <p>每次合成（P2）会生成一个 Take。</p>
               <p className="mt-1">▶ 试听某个 Take</p>
-              <p>Use 设为当前版本（会重跑 P3→P5）</p>
-              <p className="mt-1 text-neutral-400">✓ current 表示当前选中的 Take</p>
+              <p>“使用”会设为当前版本（会重跑后续阶段）</p>
+              <p className="mt-1 text-neutral-400">✓ 当前采用 表示当前选中的 Take</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -51,7 +51,7 @@ export function TakeSelector({
           >
             <span className="font-mono text-neutral-500">#{i + 1}</span>
             {isSelected ? (
-              <span className="text-emerald-600 text-[10px]">✓ current</span>
+              <span className="text-emerald-600 text-[10px]">✓ 当前采用</span>
             ) : null}
             <span className="font-mono text-neutral-400">
               {t.durationS.toFixed(2)}s
@@ -61,7 +61,7 @@ export function TakeSelector({
                 type="button"
                 onClick={() => onPreview?.(t.id)}
                 className="px-1.5 py-0.5 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-400"
-                title="Preview"
+                title="试听"
               >
                 ▶
               </button>
@@ -71,7 +71,7 @@ export function TakeSelector({
                   onClick={() => onUse?.(t.id)}
                   className="px-1.5 py-0.5 rounded bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
                 >
-                  Use
+                  使用
                 </button>
               ) : null}
             </div>

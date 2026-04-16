@@ -49,11 +49,11 @@ from .conftest import _get_maker, e2e_id, make_script_json, make_silent_wav
 # ---------------------------------------------------------------------------
 
 
-class FakeFishClient:
-    """Returns a 1-second silent WAV. Implements the FishTTSClient interface."""
+class FakeVoxCPMClient:
+    """Returns a 1-second silent WAV. Implements the local P2 client surface."""
 
     async def synthesize(self, text: str, params: Any = None) -> bytes:
-        return make_silent_wav(1.0, sample_rate=44100)
+        return make_silent_wav(2.0, sample_rate=44100)
 
     async def aclose(self) -> None:
         pass
@@ -76,12 +76,16 @@ def _fake_whisperx_handler(request: httpx.Request) -> httpx.Response:
         # chunk1 "Helloworld,thisisatest." = 23 chars → ratio 25/23 = 1.09 ✓
         # chunk2 "Secondsegmentforthepipeline." = 28 chars → ratio 25/28 = 0.89 ✓
         words = [
-            {"word": "abcdefghijklmnopqrstuvwxy", "start": 0.0, "end": 1.0, "score": 0.95},
+            {"word": "token1", "start": 0.0, "end": 0.4, "score": 0.95},
+            {"word": "token2", "start": 0.4, "end": 0.8, "score": 0.92},
+            {"word": "token3", "start": 0.8, "end": 1.2, "score": 0.92},
+            {"word": "token4", "start": 1.2, "end": 1.6, "score": 0.92},
+            {"word": "token5", "start": 1.6, "end": 2.0, "score": 0.92},
         ]
         transcript = {
             "transcript": words,
             "language": "en",
-            "duration_s": 1.0,
+            "duration_s": 2.0,
         }
         return httpx.Response(200, json=transcript)
     return httpx.Response(404)
@@ -105,7 +109,7 @@ def _wire_task_dependencies(storage: MinIOStorage) -> None:
     configure_p2_dependencies(
         session_factory=maker,
         storage=storage,
-        fish_client_factory=lambda: FakeFishClient(),
+        voxcpm_client_factory=lambda: FakeVoxCPMClient(),
     )
 
     # P3 (kept for backward compat)
@@ -174,8 +178,8 @@ async def test_full_pipeline_happy_path(storage: MinIOStorage, db_session: Async
     """End-to-end: create episode → run P1 → P2 → P3 → P5 → P6 → verify products."""
     ep_id = e2e_id()
     script_bytes = make_script_json("Full Pipeline Test", segments=[
-        {"id": 1, "type": "hook", "text": "Hello world, this is a test."},
-        {"id": 2, "type": "content", "text": "Second segment for the pipeline."},
+        {"id": 1, "type": "hook", "text": "Hello test."},
+        {"id": 2, "type": "content", "text": "Pipeline works."},
     ])
 
     # Setup
@@ -198,7 +202,7 @@ async def test_full_pipeline_happy_path(storage: MinIOStorage, db_session: Async
         assert len(chunks) >= 2
         chunk_ids = [c.id for c in chunks]
 
-    # --- P2: synth (mock Fish) ---
+    # --- P2: synth (mock VoxCPM) ---
     from server.flows.tasks.p2_synth import run_p2_synth
     p2_results: list[P2Result] = []
     for cid in chunk_ids:
@@ -290,11 +294,11 @@ async def test_full_pipeline_happy_path(storage: MinIOStorage, db_session: Async
 # ---------------------------------------------------------------------------
 
 
-class FailingFishClient:
-    """FishTTSClient that always fails."""
+class FailingVoxCPMClient:
+    """Local P2 client that always fails."""
 
     async def synthesize(self, text: str, params: Any = None) -> bytes:
-        raise RuntimeError("Simulated Fish API failure")
+        raise RuntimeError("Simulated VoxCPM failure")
 
     async def aclose(self) -> None:
         pass
@@ -310,12 +314,12 @@ async def test_pipeline_p2_failure(storage: MinIOStorage, db_session: AsyncSessi
 
     maker = _get_maker()
 
-    # Wire with failing fish client
+    # Wire with a failing local client
     from server.flows.tasks.p2_synth import configure_p2_dependencies
     configure_p2_dependencies(
         session_factory=maker,
         storage=storage,
-        fish_client_factory=lambda: FailingFishClient(),
+        voxcpm_client_factory=lambda: FailingVoxCPMClient(),
     )
 
     await _create_episode_in_db(ep_id, "Failure Test", script_bytes, storage)
@@ -331,7 +335,7 @@ async def test_pipeline_p2_failure(storage: MinIOStorage, db_session: AsyncSessi
 
     # P2 should fail
     from server.flows.tasks.p2_synth import run_p2_synth
-    with pytest.raises(RuntimeError, match="Simulated Fish API failure"):
+    with pytest.raises(RuntimeError, match="Simulated VoxCPM failure"):
         await run_p2_synth(chunk_id)
 
     # Verify stage_failed event was written
@@ -352,9 +356,8 @@ async def test_pipeline_p2_failure(storage: MinIOStorage, db_session: AsyncSessi
 async def test_p2_p2c_p2v_path(storage: MinIOStorage, db_session: AsyncSession):
     """E2E: P2 synth → P2c format check → P2v ASR verify, all pass."""
     ep_id = e2e_id()
-    # Text ~25 chars (without spaces) to match mock whisperx transcript length
     script_bytes = make_script_json("P2c-P2v Test", segments=[
-        {"id": 1, "type": "hook", "text": "Hello world this is a test here."},
+        {"id": 1, "type": "hook", "text": "Local check."},
     ])
 
     _wire_task_dependencies(storage)
@@ -368,7 +371,7 @@ async def test_p2_p2c_p2v_path(storage: MinIOStorage, db_session: AsyncSession):
     assert len(p1_result.chunks) >= 1
     chunk_ids = [c.id for c in p1_result.chunks]
 
-    # --- P2: synth (mock Fish) ---
+    # --- P2: synth (mock VoxCPM) ---
     from server.flows.tasks.p2_synth import run_p2_synth
     for cid in chunk_ids:
         await run_p2_synth(cid)

@@ -5,20 +5,15 @@ Tests run against real Postgres + MinIO. P2 is mocked.
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-import httpx
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.repositories import ChunkRepo, EpisodeRepo, TakeRepo
 from server.core.storage import MinIOStorage, episode_script_key
 from server.flows.tasks.p1_chunk import P1Context, _run_p1
 
-from .conftest import _get_maker, e2e_id, make_script_json, make_silent_wav
-from .test_full_pipeline import FakeFishClient, _fake_http_client_factory, _wire_task_dependencies
+from .conftest import _get_maker, e2e_id, make_script_json
+from .test_full_pipeline import _wire_task_dependencies
 
 
 async def _setup_episode_with_chunks(ep_id: str, storage: MinIOStorage) -> list[str]:

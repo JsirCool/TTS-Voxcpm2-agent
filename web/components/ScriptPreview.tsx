@@ -31,11 +31,11 @@ export function ScriptPreview({ title, description, segments }: Props) {
           <p className="text-xs text-neutral-500 leading-relaxed">{description}</p>
         ) : null}
         <div className="mt-2 flex items-center gap-3 text-[11px] text-neutral-400 font-mono">
-          <span>{segments.length} segments</span>
+          <span>{segments.length} 个 segment</span>
           <span>·</span>
-          <span>{totalChars} chars</span>
+          <span>{totalChars} 字</span>
           <span>·</span>
-          <span className="text-amber-600">未生成 — 点 Generate 开始 P1 切分</span>
+          <span className="text-amber-600">这是原始脚本预览，真正运行后才会生成 chunks</span>
         </div>
       </div>
 
@@ -66,7 +66,7 @@ export function ScriptPreview({ title, description, segments }: Props) {
                   <span className="text-xs text-neutral-600">{seg.topic}</span>
                 ) : null}
                 <span className="ml-auto text-[10px] text-neutral-400 font-mono">
-                  {seg.text.length} chars
+                  {seg.text.length} 字
                 </span>
               </div>
               <p className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">

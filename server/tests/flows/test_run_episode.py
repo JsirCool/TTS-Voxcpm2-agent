@@ -106,7 +106,7 @@ SAMPLE_TRANSCRIPT = {
 # ---------------------------------------------------------------------------
 
 
-def _make_tiny_wav(seconds: float = 0.5, rate: int = 16000) -> bytes:
+def _make_tiny_wav(seconds: float = 2.0, rate: int = 16000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
@@ -147,7 +147,7 @@ class FakeStorage:
         pass
 
 
-class FakeFishClient:
+class FakeVoxCPMClient:
     def __init__(
         self,
         *,
@@ -176,7 +176,18 @@ def _mock_transport(
     async def handler(request: httpx.Request) -> httpx.Response:
         if raise_exc is not None:
             raise raise_exc
-        body = response_json if response_json is not None else SAMPLE_TRANSCRIPT
+        body = response_json if response_json is not None else {
+            "transcript": [
+                {"word": "token1", "start": 0.0, "end": 0.4, "score": 0.95},
+                {"word": "token2", "start": 0.4, "end": 0.8, "score": 0.92},
+                {"word": "token3", "start": 0.8, "end": 1.2, "score": 0.92},
+                {"word": "token4", "start": 1.2, "end": 1.6, "score": 0.92},
+                {"word": "token5", "start": 1.6, "end": 2.0, "score": 0.92},
+            ],
+            "language": "zh",
+            "duration_s": 2.0,
+            "model": "large-v3",
+        }
         return httpx.Response(status_code=status_code, json=body)
 
     return httpx.MockTransport(handler)
@@ -225,8 +236,8 @@ def storage() -> FakeStorage:
 
 
 @pytest.fixture()
-def fake_fish() -> FakeFishClient:
-    return FakeFishClient()
+def fake_fish() -> FakeVoxCPMClient:
+    return FakeVoxCPMClient()
 
 
 @pytest.fixture(autouse=True)
@@ -243,7 +254,7 @@ def wire_all_deps(seeded, storage, fake_fish, monkeypatch):
     configure_p2_dependencies(
         session_factory=seeded,
         storage=storage,
-        fish_client_factory=fish_factory,
+        voxcpm_client_factory=fish_factory,
     )
 
     transport = _mock_transport()
@@ -271,7 +282,7 @@ def wire_all_deps(seeded, storage, fake_fish, monkeypatch):
     # Clean up module globals.
     p2_module._session_factory = None
     p2_module._storage = None
-    p2_module._fish_client_factory = None
+    p2_module._voxcpm_client_factory = None
     p2v_module._session_factory = None
     p2v_module._storage = None
     p2v_module._http_client_factory = None
@@ -361,12 +372,12 @@ async def test_p2_failure_aborts(seeded, storage):
     p1_result = await _run_p1(ctx, EP_ID)
     chunk_ids = [c.id for c in p1_result.chunks]
 
-    # Reconfigure P2 with a failing fish client.
-    bad_fish = FakeFishClient(raise_exc=FishAuthError("401 Unauthorized"))
+    # Reconfigure P2 with a failing local client.
+    bad_fish = FakeVoxCPMClient(raise_exc=FishAuthError("401 Unauthorized"))
     configure_p2_dependencies(
         session_factory=session_factory,
         storage=storage,
-        fish_client_factory=lambda: bad_fish,
+        voxcpm_client_factory=lambda: bad_fish,
     )
 
     with pytest.raises(FishAuthError):

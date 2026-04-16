@@ -7,9 +7,12 @@ validate input → call repo → return response model.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 # In-flight run tasks — cancel support
@@ -41,7 +44,14 @@ from server.core.repositories import (
 )
 from server.core.models import Event
 from server.core.storage import MinIOStorage, episode_script_key
+from server.core.export_bundle import (
+    DEFAULT_EXPORT_FPS,
+    build_export_bundle,
+    compute_export_cache_key,
+    write_export_bundle_to_directory,
+)
 from server.api.deps import get_prefect_client, get_session, get_storage
+from server.core.tts_presets import validate_tts_config
 
 router = APIRouter(tags=["episodes"])
 
@@ -116,6 +126,17 @@ class ConfigResponse(_CamelBase):
     config: dict[str, Any]
 
 
+class ExportLocalRequest(_CamelBase):
+    directory: str
+    fps: int = DEFAULT_EXPORT_FPS
+
+
+class ExportLocalResponse(_CamelBase):
+    directory: str
+    file_count: int
+    manifest_path: str
+
+
 class RunRequest(_CamelBase):
     """Optional body for POST /episodes/{id}/run."""
 
@@ -188,6 +209,7 @@ async def create_episode(
         config_dict = json.loads(config)
     except json.JSONDecodeError:
         config_dict = {}
+    config_dict = validate_tts_config(config_dict)
 
     repo = EpisodeRepo(session)
 
@@ -245,9 +267,16 @@ async def get_episode(
     sr_repo = StageRunRepo(session)
 
     chunks = await chunk_repo.list_by_episode(episode_id)
+    chunk_ids = [c.id for c in chunks]
+    takes_by_chunk: dict[str, list[Any]] = {}
+    stage_runs_by_chunk: dict[str, list[Any]] = {}
+    if chunk_ids:
+        for take in await take_repo.list_by_chunk_ids(chunk_ids):
+            takes_by_chunk.setdefault(take.chunk_id, []).append(take)
+        for stage_run in await sr_repo.list_by_chunk_ids(chunk_ids):
+            stage_runs_by_chunk.setdefault(stage_run.chunk_id, []).append(stage_run)
 
     # Batch-query latest verify event per chunk (avoid N+1)
-    chunk_ids = [c.id for c in chunks]
     verify_map: dict[str, Event] = {}
     if chunk_ids:
         # Subquery: max event id per chunk for verify_finished/verify_failed
@@ -275,8 +304,8 @@ async def get_episode(
 
     chunk_details: list[ChunkDetail] = []
     for c in chunks:
-        takes = await take_repo.list_by_chunk(c.id)
-        stage_runs = await sr_repo.list_by_chunk(c.id)
+        takes = takes_by_chunk.get(c.id, [])
+        stage_runs = stage_runs_by_chunk.get(c.id, [])
         # Build from dict to avoid lazy-load issues on ORM relationships.
         # Defensive: map legacy status values to prevent Pydantic validation errors.
         _STATUS_COMPAT = {"transcribed": "verified"}
@@ -355,7 +384,7 @@ async def update_config(
     if ep is None:
         raise DomainError("not_found", f"episode '{episode_id}' not found")
     # Merge: body.config overwrites existing keys
-    merged = {**(ep.config or {}), **body.config}
+    merged = validate_tts_config({**(ep.config or {}), **body.config})
     from sqlalchemy import update
     from server.core.models import Episode as EpisodeModel
     await session.execute(
@@ -421,19 +450,6 @@ async def run_episode(
 
     chunk_ids: Optional list. If provided, only run these chunks (multi-select).
     """
-    from server.core.crypto import decrypt_value
-
-    fish_key_enc = request.cookies.get("__fish_key")
-    try:
-        x_fish_key = decrypt_value(fish_key_enc) if fish_key_enc else None
-    except Exception:
-        x_fish_key = None
-    groq_key_enc = request.cookies.get("__groq_key")
-    try:
-        x_groq_key = decrypt_value(groq_key_enc) if groq_key_enc else None
-    except Exception:
-        x_groq_key = None
-
     mode = (body.mode if body else None) or "synthesize"
     chunk_ids = body.chunk_ids if body else None
 
@@ -470,30 +486,26 @@ async def run_episode(
         from server.flows.worker_bootstrap import bootstrap as _bootstrap
         _bootstrap()
 
-        # Resolve Fish API key for modes that use P2 (not chunk_only)
+        # Resolve local service wiring for modes that use P2 / P2v.
         if mode != "chunk_only":
-            fish_key = x_fish_key or os.environ.get("FISH_TTS_KEY", "")
-            if not fish_key:
-                raise DomainError("auth_required", "Fish API Key 未配置。请在设置中填入 API Key。")
             # Re-configure P2 with the resolved key (may differ from env var)
             from server.flows.tasks.p2_synth import configure_p2_dependencies
-            from server.core.fish_client import FishTTSClient
+            from server.core.voxcpm_client import VoxCPMClient
             from server.flows.worker_bootstrap import _session_factory, _storage
             configure_p2_dependencies(
                 session_factory=_session_factory,
                 storage=_storage,
-                fish_client_factory=lambda: FishTTSClient(api_key=fish_key),
+                voxcpm_client_factory=lambda: VoxCPMClient(
+                    url=os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
+                ),
             )
 
-            # Re-configure P2v with Groq key (if available)
-            groq_key = x_groq_key or os.environ.get("GROQ_API_KEY", "")
+            # Re-configure local WhisperX for verification.
             from server.flows.tasks.p2v_verify import configure_p2v_dependencies
             configure_p2v_dependencies(
                 session_factory=_session_factory,
                 storage=_storage,
                 whisperx_url=os.environ.get("WHISPERX_URL", "http://localhost:7860"),
-                groq_api_key=groq_key or None,
-                groq_proxy=os.environ.get("HTTPS_PROXY"),
             )
 
         async def _run_dev():
@@ -547,13 +559,29 @@ async def run_episode(
                     ep = await EpisodeRepo(sess).get(episode_id)
                     tts_config = (ep.config if ep else None) or {}
 
+                # Freshly created episodes have only the uploaded script.json.
+                # Run P1 once so synthesize/retry_failed modes have chunk rows
+                # to operate on in dev mode as well.
+                if not all_chunks:
+                    from server.flows.worker_bootstrap import get_p1_context
+                    from server.flows.tasks.p1_chunk import p1_chunk
+
+                    ctx = get_p1_context()
+                    result = await p1_chunk.fn(episode_id, ctx=ctx)
+                    target_ids = [c.id for c in result.chunks]
+                    async with _session_factory() as sess:
+                        all_chunks = await ChunkRepo(sess).list_by_episode(episode_id)
+                        await EpisodeRepo(sess).set_status(episode_id, "running")
+                        await sess.commit()
+                    _log.info("P1 initialized: %d chunks", len(target_ids))
+
                 target = list(all_chunks)
                 if chunk_ids:
                     cid_set = set(chunk_ids)
                     target = [c for c in target if c.id in cid_set]
 
                 if mode == "retry_failed":
-                    target = [c for c in target if c.status == "failed"]
+                    target = [c for c in target if c.status in ("failed", "needs_review")]
 
                 if mode == "regenerate":
                     from server.flows.worker_bootstrap import get_p1_context
@@ -561,6 +589,9 @@ async def run_episode(
                     ctx = get_p1_context()
                     result = await p1_chunk.fn(episode_id, ctx=ctx)
                     target_ids = [c.id for c in result.chunks]
+                    async with _session_factory() as sess:
+                        await EpisodeRepo(sess).set_status(episode_id, "running")
+                        await sess.commit()
                     _log.info("P1 regenerated: %d chunks", len(target_ids))
                 else:
                     target_ids = [c.id for c in target]
@@ -586,12 +617,26 @@ async def run_episode(
                     msg = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
                     return msg[:500] + "..." if len(msg) > 500 else msg
 
-                async def _set_chunk_failed(cid: str, error: str):
+                async def _set_chunk_status(cid: str, status: str):
                     async with _session_factory() as _s:
-                        await ChunkRepo(_s).set_status(cid, "failed")
+                        await ChunkRepo(_s).set_status(cid, status)
+                        await _s.commit()
+
+                async def _mark_needs_review(cid: str, reason: str):
+                    from server.core.repositories import EventRepo
+
+                    async with _session_factory() as _s:
+                        await ChunkRepo(_s).set_status(cid, "needs_review")
+                        await EventRepo(_s).write(
+                            episode_id=episode_id,
+                            chunk_id=cid,
+                            kind="needs_review",
+                            payload={"reason": reason},
+                        )
                         await _s.commit()
 
                 failed_chunks: set[str] = set()
+                needs_review_chunks: set[str] = set()
 
                 # --- P2: synthesize (with retry, fault-isolated) ---
                 from server.flows.tasks.p2_synth import run_p2_synth
@@ -621,8 +666,8 @@ async def run_episode(
                         await _mark_stage(cid, "p2", "failed", error=err_msg, started=t0, context={
                             "request": {"text": _text[:100], **(p2_params if isinstance(p2_params, dict) else {})},
                         })
-                        await _set_chunk_failed(cid, err_msg)
-                        failed_chunks.add(cid)
+                        await _mark_needs_review(cid, "P2 synth exception")
+                        needs_review_chunks.add(cid)
                         continue  # Don't block other chunks
 
                 # --- P2c: format check (skip failed) ---
@@ -643,8 +688,8 @@ async def run_episode(
                         if p2c_status == "failed":
                             err_msg = "; ".join(p2c_result.get("errors", []))
                             await _mark_stage(cid, "p2c", "failed", error=err_msg, started=t0)
-                            await _set_chunk_failed(cid, err_msg)
-                            failed_chunks.add(cid)
+                            await _mark_needs_review(cid, "P2c format check failed")
+                            needs_review_chunks.add(cid)
                         else:
                             await _mark_stage(cid, "p2c", "ok", started=t0, context={
                                 "response": p2c_result if isinstance(p2c_result, dict) else {"status": "ok"},
@@ -653,8 +698,8 @@ async def run_episode(
                         err_msg = _fmt_err(e)
                         _log.error("P2c failed %s: %s", cid, err_msg)
                         await _mark_stage(cid, "p2c", "failed", error=err_msg, started=t0)
-                        await _set_chunk_failed(cid, err_msg)
-                        failed_chunks.add(cid)
+                        await _mark_needs_review(cid, "P2c check exception")
+                        needs_review_chunks.add(cid)
                         continue
 
                 # --- P2v: ASR verify (skip failed) ---
@@ -674,23 +719,30 @@ async def run_episode(
                         await _mark_stage(cid, "p2v", "ok", started=t0, context={
                             "response": {"verdict": p2v_result.verdict, "charRatio": p2v_result.char_ratio, "transcriptUri": p2v_result.transcript_uri},
                         })
+                        if p2v_result.verdict != "pass":
+                            await _mark_needs_review(cid, "P2v quality check failed")
+                            needs_review_chunks.add(cid)
                     except Exception as e:
                         err_msg = _fmt_err(e)
                         _log.error("P2v failed %s: %s", cid, err_msg)
                         await _mark_stage(cid, "p2v", "failed", error=err_msg, started=t0)
-                        await _set_chunk_failed(cid, err_msg)
-                        failed_chunks.add(cid)
+                        await _mark_needs_review(cid, "P2v verify exception")
+                        needs_review_chunks.add(cid)
                         continue
 
                 # --- P5: subtitles (only verified chunks) ---
                 from server.flows.tasks.p5_subtitles import run_p5_subtitles
-                for cid in target_ids:
+                verified_target_ids: list[str] = []
+                target_id_set = set(target_ids)
+                async with _session_factory() as _s:
+                    refreshed_chunks = await ChunkRepo(_s).list_by_episode(episode_id)
+                for _chunk in refreshed_chunks:
+                    if _chunk.id in target_id_set and _chunk.status == "verified":
+                        verified_target_ids.append(_chunk.id)
+
+                for cid in verified_target_ids:
                     if cid in failed_chunks:
                         continue
-                    async with _session_factory() as _s:
-                        _ch = await ChunkRepo(_s).get(cid)
-                        if not _ch or _ch.status != "verified":
-                            continue
                     _log.info("P5 subtitle %s", cid)
                     t0 = datetime.now(timezone.utc)
                     await _mark_stage(cid, "p5", "running", started=t0)
@@ -702,11 +754,25 @@ async def run_episode(
                     except Exception as e:
                         err_msg = _fmt_err(e)
                         await _mark_stage(cid, "p5", "failed", error=err_msg, started=t0)
-                        await _set_chunk_failed(cid, err_msg)
+                        await _set_chunk_status(cid, "failed")
                         failed_chunks.add(cid)
                         continue
 
-                # --- P6: concat (all verified chunks) ---
+                async with _session_factory() as sess:
+                    episode_chunks = await ChunkRepo(sess).list_by_episode(episode_id)
+                incomplete_ids = [c.id for c in episode_chunks if c.status != "verified"]
+                if incomplete_ids:
+                    async with _session_factory() as sess:
+                        await EpisodeRepo(sess).set_status(episode_id, "ready")
+                        await sess.commit()
+                    _log.info(
+                        "Episode %s -> ready (%d chunk(s) awaiting review)",
+                        episode_id,
+                        len(incomplete_ids),
+                    )
+                    return
+
+                # --- P6: concat (full episode, only after every chunk is verified) ---
                 from server.flows.tasks.p6_concat import run_p6_concat
                 async with _session_factory() as sess:
                     _log.info("P6 concat %s", episode_id)
@@ -716,9 +782,13 @@ async def run_episode(
                 async with _session_factory() as sess:
                     final_chunks = await ChunkRepo(sess).list_by_episode(episode_id)
                     has_failed = any(c.status == "failed" for c in final_chunks)
+                    has_needs_review = any(c.status == "needs_review" for c in final_chunks)
                     if has_failed:
                         await EpisodeRepo(sess).set_status(episode_id, "failed")
                         _log.info("Episode %s → failed (%d chunk failures)", episode_id, len(failed_chunks))
+                    elif has_needs_review:
+                        await EpisodeRepo(sess).set_status(episode_id, "ready")
+                        _log.info("Episode %s -> ready (%d chunk(s) need review)", episode_id, len(needs_review_chunks))
                     else:
                         await EpisodeRepo(sess).set_status(episode_id, "done")
                         _log.info("Episode %s → done", episode_id)
@@ -734,10 +804,13 @@ async def run_episode(
                 except Exception:
                     pass
 
-        task = asyncio.create_task(_run_dev())
-        _running_tasks[episode_id] = task
-        task.add_done_callback(lambda _: _running_tasks.pop(episode_id, None))
-
+    ep.extra_metadata = {
+        **(ep.extra_metadata or {}),
+        "lastRunId": flow_run_id,
+        "lastRunMode": mode,
+        "lastRunStartedAt": datetime.utcnow().isoformat(),
+        "selectedChunkCount": len(chunk_ids or []),
+    }
     await repo.set_status(episode_id, "running")
 
     event_repo = EventRepo(session)
@@ -745,9 +818,14 @@ async def run_episode(
         episode_id=episode_id,
         chunk_id=None,
         kind="episode_status_changed",
-        payload={"status": "running", "mode": mode},
+        payload={"status": "running", "mode": mode, "flowRunId": flow_run_id},
     )
     await session.commit()
+
+    if not use_prefect:
+        task = asyncio.create_task(_run_dev())
+        _running_tasks[episode_id] = task
+        task.add_done_callback(lambda _: _running_tasks.pop(episode_id, None))
 
     return RunResponse(flow_run_id=flow_run_id)
 
@@ -820,19 +898,6 @@ async def retry_chunk(
     session: AsyncSession = Depends(get_session),
     prefect_client: Any = Depends(get_prefect_client),
 ) -> RetryResponse:
-    from server.core.crypto import decrypt_value
-
-    fish_key_enc = request.cookies.get("__fish_key")
-    try:
-        x_fish_key = decrypt_value(fish_key_enc) if fish_key_enc else None
-    except Exception:
-        x_fish_key = None
-    groq_key_enc = request.cookies.get("__groq_key")
-    try:
-        x_groq_key = decrypt_value(groq_key_enc) if groq_key_enc else None
-    except Exception:
-        x_groq_key = None
-
     chunk_repo = ChunkRepo(session)
     chunk = await chunk_repo.get(chunk_id)
     if chunk is None or chunk.episode_id != episode_id:
@@ -858,31 +923,27 @@ async def retry_chunk(
         from datetime import datetime, timezone
         _bootstrap()
 
-        # Resolve Fish API key for P2 stage
+        # Re-configure local VoxCPM service for P2 stage.
         if from_stage == "p2":
-            fish_key = x_fish_key or os.environ.get("FISH_TTS_KEY", "")
-            if not fish_key:
-                raise DomainError("auth_required", "Fish API Key 未配置。请在设置中填入 API Key。")
             from server.flows.tasks.p2_synth import configure_p2_dependencies
-            from server.core.fish_client import FishTTSClient
+            from server.core.voxcpm_client import VoxCPMClient
             from server.flows.worker_bootstrap import _session_factory as _sf, _storage as _st
             configure_p2_dependencies(
                 session_factory=_sf,
                 storage=_st,
-                fish_client_factory=lambda: FishTTSClient(api_key=fish_key),
+                voxcpm_client_factory=lambda: VoxCPMClient(
+                    url=os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
+                ),
             )
 
-        # Re-configure P2v with Groq key for stages that use ASR
+        # Re-configure local WhisperX for stages that use ASR.
         if from_stage in ("p2", "p2v", "p3"):
             from server.flows.tasks.p2v_verify import configure_p2v_dependencies
             from server.flows.worker_bootstrap import _session_factory as _sf2, _storage as _st2
-            groq_key = x_groq_key or os.environ.get("GROQ_API_KEY", "")
             configure_p2v_dependencies(
                 session_factory=_sf2,
                 storage=_st2,
                 whisperx_url=os.environ.get("WHISPERX_URL", "http://localhost:7860"),
-                groq_api_key=groq_key or None,
-                groq_proxy=os.environ.get("HTTPS_PROXY"),
             )
 
         async def _retry_dev():
@@ -1318,10 +1379,29 @@ async def get_episode_script(
 # ---------------------------------------------------------------------------
 
 
+def _export_cache_root() -> Path:
+    raw = os.environ.get("HARNESS_EXPORT_CACHE_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path(__file__).resolve().parents[3] / ".harness" / "export-cache").resolve()
+
+
+def _copy_directory_contents(source_root: Path, target_root: Path) -> None:
+    target_root.mkdir(parents=True, exist_ok=True)
+    for path in source_root.rglob("*"):
+        if path.is_dir():
+            continue
+        relative = path.relative_to(source_root)
+        output_path = target_root / relative
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, output_path)
+
+
 @router.get("/episodes/{episode_id}/export")
 async def export_episode(
     episode_id: str,
     format: str = Query("shots", description="Export format: shots (per-shot WAV + subtitles)"),
+    fps: int = Query(DEFAULT_EXPORT_FPS, ge=1, le=120),
     session: AsyncSession = Depends(get_session),
     storage: MinIOStorage = Depends(get_storage),
 ):
@@ -1333,24 +1413,12 @@ async def export_episode(
         subtitles.json   — {shot_id: [{id, text, start, end}]} with shot-level offsets
         durations.json   — [{id, duration_s, file}]
     """
-    import io
-    import json
-    import tempfile
-    import wave
     import zipfile
-    from collections import defaultdict
-    from pathlib import Path
 
     from fastapi.responses import StreamingResponse
 
-    from server.core.p6_logic import (
-        ChunkTiming,
-        compute_chunk_offsets,
-        generate_silence,
-        parse_srt,
-        sort_chunk_timings,
-    )
-    from server.core.storage import chunk_subtitle_key, chunk_take_key
+    if format != "shots":
+        raise DomainError("invalid_input", f"unsupported export format '{format}'")
 
     repo = EpisodeRepo(session)
     ep = await repo.get(episode_id)
@@ -1360,131 +1428,42 @@ async def export_episode(
     chunk_repo = ChunkRepo(session)
     take_repo = TakeRepo(session)
     chunks = await chunk_repo.list_by_episode(episode_id)
-
-    # Build sorted list with takes
-    items_by_shot: dict[str, list] = defaultdict(list)
-    for c in sorted(chunks, key=lambda c: (c.shot_id, c.idx)):
-        if c.selected_take_id and c.status in ("verified", "synth_done"):
-            take = await take_repo.select(c.selected_take_id)
-            if take:
-                items_by_shot[c.shot_id].append({"chunk": c, "take": take})
-
-    if not items_by_shot:
-        raise DomainError("invalid_state", "no verified chunks to export")
-
-    # P6 constants (must match p6_concat.py defaults)
-    PADDING_S = 0.2
-    SHOT_GAP_S = 0.5
+    selected_take_ids = [chunk.selected_take_id for chunk in chunks if chunk.selected_take_id]
+    selected_takes = {
+        take.id: take
+        for take in await take_repo.select_many(selected_take_ids)
+    }
+    cache_key = compute_export_cache_key(
+        episode_id=episode_id,
+        episode_title=ep.title,
+        chunks=chunks,
+        selected_takes=selected_takes,
+        fps=fps,
+    )
+    cache_dir = _export_cache_root() / episode_id / cache_key
+    if not cache_dir.exists():
+        try:
+            bundle = await build_export_bundle(
+                episode_id=episode_id,
+                chunks=chunks,
+                take_repo=take_repo,
+                storage=storage,
+                fps=fps,
+                selected_takes=selected_takes,
+                episode_title=ep.title,
+                cache_key=cache_key,
+            )
+        except ValueError as exc:
+            raise DomainError("invalid_state", str(exc))
+        write_export_bundle_to_directory(bundle, str(cache_dir), nest_episode_dir=False)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        durations = []
-        all_subtitles: dict[str, list] = {}
-
-        for shot_id, items in items_by_shot.items():
-            # Build ChunkTimings for offset calculation within this shot
-            timings = sort_chunk_timings([
-                ChunkTiming(
-                    chunk_id=item["chunk"].id,
-                    shot_id=shot_id,
-                    idx=item["chunk"].idx,
-                    duration_s=float(item["take"].duration_s or 0.0),
-                )
-                for item in items
-            ])
-
-            # Compute per-chunk offsets within this shot (same-shot padding only)
-            offsets = compute_chunk_offsets(timings, PADDING_S, SHOT_GAP_S)
-
-            # --- Build per-shot WAV with padding ---
-            with tempfile.TemporaryDirectory() as tmp:
-                tmp_path = Path(tmp)
-                concat_entries: list[Path] = []
-
-                # Generate silence files
-                sil_padding = tmp_path / "sil_padding.wav"
-                await generate_silence(sil_padding, PADDING_S, sample_rate=44100)
-
-                for i, (timing, item) in enumerate(zip(timings, items)):
-                    take = item["take"]
-                    audio_key = take.audio_uri.split("//", 1)[-1].split("/", 1)[-1] if take.audio_uri.startswith("s3://") else take.audio_uri
-                    try:
-                        wav_bytes = await storage.download_bytes(audio_key)
-                    except Exception:
-                        continue
-                    chunk_wav = tmp_path / f"chunk_{i:03d}.wav"
-                    chunk_wav.write_bytes(wav_bytes)
-
-                    if i > 0:
-                        concat_entries.append(sil_padding)
-                    concat_entries.append(chunk_wav)
-
-                if not concat_entries:
-                    continue
-
-                if len(concat_entries) == 1:
-                    shot_wav_bytes = concat_entries[0].read_bytes()
-                else:
-                    concat_list = tmp_path / "concat.txt"
-                    concat_list.write_text(
-                        "\n".join(f"file '{p.resolve()}'" for p in concat_entries)
-                    )
-                    shot_wav = tmp_path / f"{shot_id}.wav"
-                    import subprocess
-                    proc = subprocess.run(
-                        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                         "-f", "concat", "-safe", "0",
-                         "-i", str(concat_list),
-                         "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le",
-                         str(shot_wav)],
-                        capture_output=True, timeout=30,
-                    )
-                    if proc.returncode != 0:
-                        continue
-                    shot_wav_bytes = shot_wav.read_bytes()
-
-                zf.writestr(f"{episode_id}/{shot_id}.wav", shot_wav_bytes)
-
-                # Duration from WAV header
-                try:
-                    with io.BytesIO(shot_wav_bytes) as wio:
-                        with wave.open(wio) as wf:
-                            dur = wf.getnframes() / wf.getframerate()
-                except Exception:
-                    dur = sum(float(item["take"].duration_s) for item in items)
-
-                durations.append({
-                    "id": shot_id,
-                    "duration_s": round(dur, 3),
-                    "file": f"{shot_id}.wav",
-                })
-
-            # --- Build Remotion-format subtitles with offsets ---
-            shot_subs = []
-            sub_counter = len([s for subs in all_subtitles.values() for s in subs])
-            for timing, offset in zip(timings, offsets):
-                sub_key = chunk_subtitle_key(episode_id, timing.chunk_id)
-                try:
-                    srt_bytes = await storage.download_bytes(sub_key)
-                    cues = parse_srt(srt_bytes.decode("utf-8"))
-                except Exception:
-                    continue
-                for cue in cues:
-                    sub_counter += 1
-                    shot_subs.append({
-                        "id": f"sub_{sub_counter:03d}",
-                        "text": cue.text,
-                        "start": round(cue.start_s + offset, 3),
-                        "end": round(cue.end_s + offset, 3),
-                    })
-            if shot_subs:
-                all_subtitles[shot_id] = shot_subs
-
-        # Write subtitles.json (Remotion format)
-        zf.writestr(f"{episode_id}/subtitles.json", json.dumps(all_subtitles, ensure_ascii=False, indent=2))
-
-        # Write durations.json
-        zf.writestr(f"{episode_id}/durations.json", json.dumps(durations, ensure_ascii=False, indent=2))
+        for file_path in sorted(cache_dir.rglob("*")):
+            if file_path.is_dir():
+                continue
+            relative_path = file_path.relative_to(cache_dir).as_posix()
+            zf.write(file_path, arcname=f"{episode_id}/{relative_path}")
 
     buf.seek(0)
     from urllib.parse import quote
@@ -1496,4 +1475,62 @@ async def export_episode(
             "Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}",
             "Content-Length": str(buf.getbuffer().nbytes),
         },
+    )
+
+
+@router.post("/episodes/{episode_id}/export-local", response_model=ExportLocalResponse)
+async def export_episode_local(
+    episode_id: str,
+    body: ExportLocalRequest,
+    session: AsyncSession = Depends(get_session),
+    storage: MinIOStorage = Depends(get_storage),
+) -> ExportLocalResponse:
+    if not body.directory.strip():
+        raise DomainError("invalid_input", "directory is required")
+    repo = EpisodeRepo(session)
+    ep = await repo.get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+
+    chunk_repo = ChunkRepo(session)
+    take_repo = TakeRepo(session)
+    chunks = await chunk_repo.list_by_episode(episode_id)
+    selected_take_ids = [chunk.selected_take_id for chunk in chunks if chunk.selected_take_id]
+    selected_takes = {
+        take.id: take
+        for take in await take_repo.select_many(selected_take_ids)
+    }
+    cache_key = compute_export_cache_key(
+        episode_id=episode_id,
+        episode_title=ep.title,
+        chunks=chunks,
+        selected_takes=selected_takes,
+        fps=body.fps,
+    )
+    cache_dir = _export_cache_root() / episode_id / cache_key
+    cache_hit = cache_dir.exists()
+    if not cache_hit:
+        try:
+            bundle = await build_export_bundle(
+                episode_id=episode_id,
+                chunks=chunks,
+                take_repo=take_repo,
+                storage=storage,
+                fps=body.fps,
+                selected_takes=selected_takes,
+                episode_title=ep.title,
+                cache_key=cache_key,
+            )
+        except ValueError as exc:
+            raise DomainError("invalid_state", str(exc))
+        write_export_bundle_to_directory(bundle, str(cache_dir), nest_episode_dir=False)
+
+    directory = Path(body.directory).expanduser().resolve() / episode_id
+    if directory.exists():
+        shutil.rmtree(directory)
+    _copy_directory_contents(cache_dir, directory)
+    return ExportLocalResponse(
+        directory=str(directory),
+        file_count=len([path for path in cache_dir.rglob("*") if path.is_file()]),
+        manifest_path=os.path.join(str(directory), "remotion-manifest.json"),
     )

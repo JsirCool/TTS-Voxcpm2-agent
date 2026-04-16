@@ -2,14 +2,15 @@
 
 import { memo, useCallback, useState } from "react";
 import type { Chunk, ChunkEdit, ChunkStatus, StageName } from "@/lib/types";
+import { STAGE_SHORT_LABEL } from "@/lib/stage-labels";
 import { getDisplaySubtitle, stripControlMarkers } from "@/lib/utils";
 import { useHarnessStore } from "@/lib/store";
 import { useAudioPlayer } from "@/hooks/useAudioPlayer";
 import { KaraokeSubtitle } from "./KaraokeSubtitle";
 import { RetryRow } from "./RetryRow";
 import { StagePipeline } from "./StagePipeline";
-import { VerifyScoreBar } from "./VerifyScoreBar";
 import { TakeSelector } from "./TakeSelector";
+import { VerifyScoreBar } from "./VerifyScoreBar";
 import { GRID_COLS } from "./chunks-grid";
 
 export type DirtyType = null | "tts" | "subtitle" | "both";
@@ -22,6 +23,7 @@ interface Props {
   onPreviewTake?: (takeId: string) => void;
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
+  onQuickRetry?: (stage: StageName) => void | Promise<void>;
   synthesizing?: boolean;
   getAudioUrl: (uri: string) => string;
 }
@@ -36,20 +38,42 @@ function computeDirty(edit: ChunkEdit | undefined): DirtyType {
   return null;
 }
 
+function getReviewSuggestion(chunk: Chunk): string | null {
+  if (chunk.status !== "needs_review" && chunk.status !== "failed") return null;
+  const diagnosisType = chunk.verifyDiagnosis?.type;
+  if (diagnosisType === "speed_anomaly") {
+    return "建议先检查 TTS 源文本和语速，再决定是否重跑配音。";
+  }
+  if (diagnosisType === "silence_anomaly") {
+    return "建议先试听当前 take，确认静音段后再重跑配音或改稿。";
+  }
+  if (chunk.stageRuns.some((stageRun) => stageRun.stage === "p2v" && stageRun.status === "failed")) {
+    return "建议先看复核日志，确认是 WhisperX 不可用还是质量门槛未通过。";
+  }
+  return "建议先试听当前 take，再决定重跑、换 take 或手动修改。";
+}
+
+function getQuickRetryStage(chunk: Chunk): StageName {
+  const failedStage = (["p5", "p2v", "p2c", "p2"] as StageName[]).find((stage) =>
+    chunk.stageRuns.some((run) => run.stage === stage && run.status === "failed"),
+  );
+  if (failedStage) return failedStage;
+  if (chunk.status === "needs_review") return "p2";
+  return "p2";
+}
+
 function statusIcon(status: ChunkStatus) {
   switch (status) {
     case "verified":
       return <span className="text-emerald-500">✓</span>;
     case "synth_done":
-      return <span className="text-blue-500">◐</span>;
+      return <span className="text-blue-500">●</span>;
     case "needs_review":
-      return <span className="text-amber-500">🔍</span>;
-    case "pending":
-      return <span className="text-neutral-300 dark:text-neutral-600">○</span>;
+      return <span className="text-amber-500">!</span>;
     case "failed":
-      return <span className="text-red-500">✗</span>;
+      return <span className="text-red-500">×</span>;
     default:
-      return <span className="text-neutral-300 dark:text-neutral-600">○</span>;
+      return <span className="text-neutral-300 dark:text-neutral-600">●</span>;
   }
 }
 
@@ -60,59 +84,45 @@ export const ChunkRow = memo(function ChunkRow({
   onPreviewTake,
   onUseTake,
   onSynthesize,
+  onQuickRetry,
   synthesizing = false,
   getAudioUrl,
 }: Props) {
-  // --- Zustand selectors ---
-  const isEditing = useHarnessStore((s) => s.editing === chunk.id);
-  const edit = useHarnessStore((s) => s.edits[chunk.id]);
-  const startEditing = useHarnessStore((s) => s.startEditing);
-  const cancelEditing = useHarnessStore((s) => s.cancelEditing);
+  const isEditing = useHarnessStore((state) => state.editing === chunk.id);
+  const edit = useHarnessStore((state) => state.edits[chunk.id]);
+  const startEditing = useHarnessStore((state) => state.startEditing);
+  const cancelEditing = useHarnessStore((state) => state.cancelEditing);
 
   const dirty = computeDirty(edit);
   const isDirty = dirty !== null;
-  const hasSubField = chunk.subtitleText != null;
+  const hasSubtitleField = chunk.subtitleText != null;
 
-  const currentTakeForUrl = chunk.takes.find((t) => t.id === chunk.selectedTakeId);
-  const cacheBust = currentTakeForUrl?.createdAt
-    ? `?v=${encodeURIComponent(currentTakeForUrl.createdAt)}`
+  const currentTake = chunk.takes.find((take) => take.id === chunk.selectedTakeId);
+  const cacheBust = currentTake?.createdAt
+    ? `?v=${encodeURIComponent(currentTake.createdAt)}`
     : `?v=${chunk.charCount}`;
   const audioUrl =
     chunk.selectedTakeId &&
-    currentTakeForUrl &&
+    currentTake &&
     (chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review")
-      ? getAudioUrl(currentTakeForUrl.audioUri) + cacheBust
+      ? getAudioUrl(currentTake.audioUri) + cacheBust
       : "";
 
-  let displayText: string;
-  if (displayMode === "tts") {
-    displayText =
-      edit?.textNormalized !== undefined
-        ? edit.textNormalized
-        : chunk.textNormalized;
-  } else {
-    displayText =
-      edit?.subtitleText !== undefined
-        ? stripControlMarkers(edit.subtitleText)
-        : getDisplaySubtitle(chunk);
-  }
+  const displayText = displayMode === "tts"
+    ? (edit?.textNormalized !== undefined ? edit.textNormalized : chunk.textNormalized)
+    : (edit?.subtitleText !== undefined ? stripControlMarkers(edit.subtitleText) : getDisplaySubtitle(chunk));
 
-  const currentTake = chunk.takes.find((t) => t.id === chunk.selectedTakeId);
   const durationS = currentTake?.durationS ?? 0;
-
-  // --- Audio player (single source of truth for play/pause/seek) ---
   const player = useAudioPlayer(chunk.id, durationS);
+  const { isPlaying } = player;
 
   const [verifyExpanded, setVerifyExpanded] = useState(false);
-  const toggleVerify = useCallback(() => setVerifyExpanded((v) => !v), []);
+  const toggleVerify = useCallback(() => setVerifyExpanded((value) => !value), []);
 
   const hasAudio = chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review";
   const canPlay = hasAudio && !isDirty;
   const needsSynth = chunk.status === "pending" && !isDirty;
-
   const onEdit = () => startEditing(chunk.id);
-
-  const { isPlaying } = player;
 
   const rowBg = isPlaying
     ? "bg-blue-50 dark:bg-blue-900/20 shadow-[inset_3px_0_0_#2563eb]"
@@ -125,11 +135,14 @@ export const ChunkRow = memo(function ChunkRow({
           : "hover:bg-neutral-50 dark:hover:bg-neutral-800";
 
   let dirtyBadge: string | null = null;
-  if (dirty === "tts") dirtyBadge = "TTS dirty";
-  else if (dirty === "subtitle") dirtyBadge = "SUB dirty";
-  else if (dirty === "both") dirtyBadge = "TTS+SUB dirty";
+  if (dirty === "tts") dirtyBadge = "TTS 已暂存";
+  else if (dirty === "subtitle") dirtyBadge = "字幕已暂存";
+  else if (dirty === "both") dirtyBadge = "TTS+字幕已暂存";
 
   const baseColor = isDirty ? "text-amber-900 dark:text-amber-200" : "text-neutral-700 dark:text-neutral-300";
+  const reviewSuggestion = getReviewSuggestion(chunk);
+  const quickRetryStage = getQuickRetryStage(chunk);
+  const quickRetryLabel = STAGE_SHORT_LABEL[quickRetryStage];
 
   return (
     <div
@@ -138,12 +151,9 @@ export const ChunkRow = memo(function ChunkRow({
     >
       <div className="px-6 py-2.5 font-mono text-[11px] text-neutral-500 dark:text-neutral-400 self-start">
         {chunk.id}
-        {hasSubField ? (
-          <span
-            className="ml-1 text-[9px] text-purple-500"
-            title="subtitle_text set"
-          >
-            ◆
+        {hasSubtitleField ? (
+          <span className="ml-1 text-[9px] text-purple-500" title="已设置 subtitle_text">
+            •
           </span>
         ) : null}
       </div>
@@ -159,29 +169,28 @@ export const ChunkRow = memo(function ChunkRow({
             disabled={synthesizing}
             title="合成并播放"
             className={`w-7 h-7 inline-flex items-center justify-center rounded ${
-              synthesizing
-                ? "text-blue-400 animate-pulse cursor-wait"
-                : "hover:bg-blue-100 text-blue-600"
+              synthesizing ? "text-blue-400 animate-pulse cursor-wait" : "hover:bg-blue-100 text-blue-600"
             }`}
           >
-            ▸
+            ▶
           </button>
         ) : (
           <button
             type="button"
             onClick={player.toggle}
             disabled={!canPlay}
-            title={isDirty ? "Has staged changes, Apply first" : ""}
+            title={isDirty ? "有暂存修改，请先统一应用" : ""}
             className={`w-7 h-7 inline-flex items-center justify-center rounded ${
               canPlay
                 ? "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
                 : "text-neutral-300 dark:text-neutral-600 cursor-not-allowed"
             } ${isPlaying ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200" : ""}`}
           >
-            {isPlaying ? "⏸" : "▶"}
+            {isPlaying ? "❚❚" : "▶"}
           </button>
         )}
       </div>
+
       <div className="py-2.5 pr-6 self-start">
         <div className="flex items-start flex-wrap">
           <div className="flex-1 min-w-0">
@@ -200,22 +209,30 @@ export const ChunkRow = memo(function ChunkRow({
             </span>
           ) : null}
         </div>
-        {chunk.stageRuns.length > 0 && (
+
+        {chunk.stageRuns.length > 0 ? (
           <div className="mt-1">
-            <StagePipeline
-              stageRuns={chunk.stageRuns}
-              onStageClick={onStageClick}
-              compact
-            />
+            <StagePipeline stageRuns={chunk.stageRuns} onStageClick={onStageClick} compact />
           </div>
-        )}
-        {chunk.verifyScores && chunk.verifyScores.weightedScore != null && (
+        ) : null}
+
+        {reviewSuggestion ? (
+          <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            <span className="font-semibold">待人工复核</span>
+            <span className="mx-1">·</span>
+            <span>{chunk.verifyDiagnosis?.detail ?? reviewSuggestion}</span>
+            {chunk.verifyDiagnosis?.detail ? (
+              <>
+                <span className="mx-1">·</span>
+                <span>{reviewSuggestion}</span>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        {chunk.verifyScores && chunk.verifyScores.weightedScore != null ? (
           <div className="mt-1">
-            <button
-              type="button"
-              onClick={toggleVerify}
-              className="flex items-center gap-1.5 text-[11px] w-full text-left group"
-            >
+            <button type="button" onClick={toggleVerify} className="flex items-center gap-1.5 text-[11px] w-full text-left group">
               <span className="text-neutral-400 dark:text-neutral-500 text-[9px] group-hover:text-neutral-600 dark:group-hover:text-neutral-300 transition-colors">
                 {verifyExpanded ? "▾" : "▸"}
               </span>
@@ -229,21 +246,25 @@ export const ChunkRow = memo(function ChunkRow({
                     : "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
                 }`}
               >
-                {chunk.verifyDiagnosis?.verdict === "fail" || chunk.verifyScores.weightedScore < 0.7 ? "FAIL" : "PASS"}
+                {chunk.verifyDiagnosis?.verdict === "fail" || chunk.verifyScores.weightedScore < 0.7 ? "待复核" : "通过"}
               </span>
-              {chunk.verifyDiagnosis?.detail && (
-                <span className="px-1 py-0.5 rounded text-[9px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 truncate max-w-[300px]" title={chunk.verifyDiagnosis.detail}>
+              {chunk.verifyDiagnosis?.detail ? (
+                <span
+                  className="px-1 py-0.5 rounded text-[9px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 truncate max-w-[300px]"
+                  title={chunk.verifyDiagnosis.detail}
+                >
                   {chunk.verifyDiagnosis.detail}
                 </span>
-              )}
+              ) : null}
             </button>
-            {verifyExpanded && (
+            {verifyExpanded ? (
               <div className="mt-1 pl-3">
                 <VerifyScoreBar scores={chunk.verifyScores} />
               </div>
-            )}
+            ) : null}
           </div>
-        )}
+        ) : null}
+
         {chunk.takes.length > 1 ? (
           <TakeSelector
             takes={chunk.takes}
@@ -252,48 +273,56 @@ export const ChunkRow = memo(function ChunkRow({
             onUse={onUseTake}
           />
         ) : null}
-        {chunk.attemptHistory && chunk.attemptHistory.length > 0 && (
+
+        {chunk.attemptHistory && chunk.attemptHistory.length > 0 ? (
           <div className="mt-1 border border-neutral-200 dark:border-neutral-700 rounded overflow-hidden">
-            {chunk.attemptHistory.map((att, i) => (
+            {chunk.attemptHistory.map((attempt, index) => (
               <RetryRow
-                key={`${att.attempt}-${att.timestamp}`}
-                attempt={att}
-                attemptIndex={i + 1}
-                isCurrent={i === chunk.attemptHistory!.length - 1 && att.verdict === "pass"}
+                key={`${attempt.attempt}-${attempt.timestamp}`}
+                attempt={attempt}
+                attemptIndex={index + 1}
+                isCurrent={index === chunk.attemptHistory!.length - 1 && attempt.verdict === "pass"}
                 onStageClick={onStageClick}
               />
             ))}
           </div>
-        )}
-        {audioUrl ? (
-          <audio
-            key={audioUrl}
-            ref={player.ref}
-            src={audioUrl}
-            preload="metadata"
-            className="hidden"
-          />
         ) : null}
+
+        {audioUrl ? <audio key={audioUrl} ref={player.ref} src={audioUrl} preload="metadata" className="hidden" /> : null}
       </div>
+
       <div className="py-2.5 pr-6 self-start text-right">
-        <button
-          type="button"
-          onClick={isEditing ? cancelEditing : onEdit}
-          title={isEditing ? "Close edit" : "Edit"}
-          className={`w-7 h-7 inline-flex items-center justify-center rounded ${
-            isEditing
-              ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
-              : "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
-          }`}
-        >
-          {isEditing ? "✕" : "✎"}
-        </button>
+        <div className="inline-flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onQuickRetry?.(quickRetryStage)}
+            disabled={synthesizing || !onQuickRetry}
+            title={`快捷重跑${quickRetryLabel}`}
+            className={`h-7 px-2 inline-flex items-center justify-center rounded text-[10px] font-semibold ${
+              synthesizing || !onQuickRetry
+                ? "bg-neutral-200 dark:bg-neutral-700 text-neutral-400 cursor-wait"
+                : "border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            }`}
+          >
+            ↻ {quickRetryLabel}
+          </button>
+          <button
+            type="button"
+            onClick={isEditing ? cancelEditing : onEdit}
+            title={isEditing ? "关闭编辑" : "编辑"}
+            className={`w-7 h-7 inline-flex items-center justify-center rounded ${
+              isEditing
+                ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
+                : "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
+            }`}
+          >
+            {isEditing ? "✓" : "✎"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }, (prev, next) => {
-  // Zustand selector handles isPlaying/isEditing/edit re-renders automatically.
-  // We only need to compare the props we receive.
   return prev.chunk === next.chunk
     && prev.displayMode === next.displayMode
     && prev.synthesizing === next.synthesizing
@@ -301,5 +330,6 @@ export const ChunkRow = memo(function ChunkRow({
     && prev.onPreviewTake === next.onPreviewTake
     && prev.onUseTake === next.onUseTake
     && prev.onSynthesize === next.onSynthesize
+    && prev.onQuickRetry === next.onQuickRetry
     && prev.getAudioUrl === next.getAudioUrl;
 });

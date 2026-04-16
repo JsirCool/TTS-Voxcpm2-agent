@@ -102,12 +102,20 @@ export function useEpisode(id: string | null): HookResult<Episode> {
 // Imperative operations (type-safe via openapi-fetch)
 // ---------------------------------------------------------------------------
 
-export async function createEpisode(id: string, file: File): Promise<void> {
+export async function createEpisode(
+  id: string,
+  file: File,
+  options?: { title?: string; config?: Record<string, unknown> },
+): Promise<void> {
   const { error } = await api.POST("/episodes", {
-    body: { id, script: file } as never, // multipart — openapi-fetch handles FormData
+    body: { id, title: options?.title, config: options?.config, script: file } as never, // multipart — openapi-fetch handles FormData
     bodySerializer: (body: Record<string, unknown>) => {
       const fd = new FormData();
       fd.append("id", body.id as string);
+      if (typeof body.title === "string" && body.title.trim()) {
+        fd.append("title", body.title);
+      }
+      fd.append("config", JSON.stringify((body.config as Record<string, unknown> | undefined) ?? {}));
       fd.append("script", body.script as File);
       return fd;
     },
@@ -252,5 +260,13 @@ export async function updateConfig(
 }
 
 export async function exportEpisode(id: string, dir: string): Promise<void> {
-  throw new Error(`exportEpisode not implemented (target: ${dir})`);
+  const res = await fetch(`${getApiUrl()}/episodes/${encodeURIComponent(id)}/export-local`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ directory: dir }),
+  });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
 }

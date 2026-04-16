@@ -25,6 +25,7 @@ from server.api.routes.audio import router as audio_router
 from server.api.routes.episodes import router as episodes_router
 from server.api.routes.health import router as health_router
 from server.api.routes.keys import router as keys_router
+from server.api.routes.presets import router as presets_router
 from server.api.sse import router as sse_router
 from server.api.sse import start_listener, stop_listener
 from server.core.db import _database_url
@@ -73,4 +74,5 @@ app.include_router(audio_router)
 app.include_router(episodes_router)
 app.include_router(health_router)
 app.include_router(keys_router)
+app.include_router(presets_router)
 app.include_router(sse_router)

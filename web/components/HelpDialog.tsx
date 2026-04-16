@@ -30,7 +30,7 @@ export function HelpDialog({ open, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-neutral-200 px-5 py-3 dark:border-neutral-700">
-          <span className="text-lg">Docs</span>
+          <span className="text-lg">说明</span>
           <h2 className="flex-1 text-sm font-semibold">使用说明</h2>
           <button
             type="button"
@@ -45,7 +45,7 @@ export function HelpDialog({ open, onClose }: Props) {
         <div className="flex-1 overflow-y-auto px-6 py-5 text-sm leading-relaxed text-neutral-800 dark:text-neutral-200">
           <section className="mb-6">
             <h3 className="mb-2 text-base font-semibold text-neutral-900 dark:text-neutral-100">
-              Script TTS Config
+              脚本与 TTS 配置
             </h3>
             <p className="mb-3 text-neutral-600 dark:text-neutral-400">
               现在的 P2 使用本地 VoxCPM，不再走 Fish Audio。你可以在 episode config
@@ -132,7 +132,7 @@ export function HelpDialog({ open, onClose }: Props) {
 
           <section>
             <h3 className="mb-2 text-base font-semibold text-neutral-900 dark:text-neutral-100">
-              Per-chunk Pipeline
+              Chunk 处理链
             </h3>
             <p className="mb-2 text-neutral-600 dark:text-neutral-400">
               每个 chunk 下方的 {CHUNK_STAGE_ORDER.length} 个 pill 表示当前处理状态：

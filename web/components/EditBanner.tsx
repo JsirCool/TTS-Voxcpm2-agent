@@ -38,14 +38,14 @@ export function EditBanner({ ttsCount, subCount, onApply, onDiscard }: Props) {
           onClick={onDiscard}
           className="text-xs px-2.5 py-1 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-800/30 rounded"
         >
-          Discard
+          撤销暂存
         </button>
         <button
           type="button"
           onClick={onApply}
           className="text-xs px-3 py-1 bg-amber-600 text-white rounded hover:bg-amber-700"
         >
-          Apply All
+          统一应用
         </button>
       </div>
     </div>

@@ -66,17 +66,17 @@ def bootstrap() -> None:
 
     # Wire P2.
     from server.flows.tasks.p2_synth import configure_p2_dependencies
-    from server.core.fish_client import FishTTSClient
+    from server.core.voxcpm_client import VoxCPMClient
 
-    fish_api_key = _env("FISH_TTS_KEY", "")
+    voxcpm_url = _env("VOXCPM_URL", "http://127.0.0.1:8877")
 
-    def _fish_factory() -> FishTTSClient:
-        return FishTTSClient(api_key=fish_api_key)
+    def _voxcpm_factory() -> VoxCPMClient:
+        return VoxCPMClient(url=voxcpm_url)
 
     configure_p2_dependencies(
         session_factory=_session_factory,
         storage=_storage,
-        fish_client_factory=_fish_factory,
+        voxcpm_client_factory=_voxcpm_factory,
     )
 
     # Wire P3 (kept for backward compat).

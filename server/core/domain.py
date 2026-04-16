@@ -226,23 +226,35 @@ class P2Result(_CamelBase):
 
 
 class FishTTSParams(_CamelBase):
-    """Full parameter surface for a Fish Audio TTS S2-Pro call.
+    """Unified synthesis parameter surface stored in ``takes.params``.
 
-    Defaults are safe production values. Overrides flow in from
-    environment variables at task-boundary level (not here): keeping this
-    schema free of env coupling makes it trivial to serialize into the
-    ``takes.params`` JSON column for audit.
+    The class name is kept for backward compatibility with older tests and
+    tooling, but the active runtime now targets local VoxCPM. Legacy Fish
+    fields remain optional so existing configs do not hard-fail while the UI
+    and runtime move to the new local-stack defaults.
     """
 
+    # Legacy Fish-compatible fields (kept so older configs/tests still parse).
     reference_id: str | None = None
-    model: str = "s2-pro"
+    model: str = "voxcpm2"
     format: Literal["wav", "mp3", "pcm"] = "wav"
     mp3_bitrate: int = 192
-    normalize: bool = False
     latency: Literal["normal", "balanced"] = "normal"
     temperature: float = 0.7
     top_p: float = 0.7
     chunk_length: int = 200
+
+    # Active local VoxCPM fields.
+    normalize: bool = False
+    denoise: bool = False
+    cfg_value: float = 2.0
+    inference_timesteps: int = 10
+    max_len: int = 4096
+    speed: float = 1.0
+    reference_audio_path: str | None = None
+    prompt_audio_path: str | None = None
+    prompt_text: str | None = None
+    control_prompt: str | None = None
 
 
 class P2vResult(_CamelBase):

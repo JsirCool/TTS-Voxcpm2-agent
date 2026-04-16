@@ -162,6 +162,7 @@ async def _seed_episode(
             )
         )
         await chunk_repo.set_selected_take(cid, take_id)
+        await chunk_repo.set_status(cid, "verified")
 
         if srt_body:
             await storage.upload_bytes(
@@ -237,7 +238,7 @@ async def test_run_p6_concat_end_to_end(tmp_path: Path, session: AsyncSession):
 
     # SRT content sanity: three renumbered cues with shifted timestamps.
     srt_bytes = storage._objects[f"episodes/ep/final/episode.srt"]
-    srt_text = srt_bytes.decode("utf-8")
+    srt_text = srt_bytes.decode("utf-8").replace("\r\n", "\n")
     assert "1\n00:00:00,100 --> 00:00:00,800\nHello" in srt_text
     # c2 offset = 1.0 + 0.2 = 1.2 → 1.25 --> 1.70
     assert "2\n00:00:01,250 --> 00:00:01,700\nWorld" in srt_text
@@ -278,6 +279,7 @@ async def test_run_p6_concat_rejects_missing_selected_take(
             )
         ]
     )
+    await chunk_repo.set_status("ep2:c1", "verified")
     await session.commit()
 
     with pytest.raises(DomainError) as exc:

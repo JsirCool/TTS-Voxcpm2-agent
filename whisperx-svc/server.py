@@ -49,6 +49,25 @@ WHISPER_COMPUTE_TYPE = os.environ.get(
 )
 MODEL_CACHE_DIR = os.environ.get("MODEL_CACHE_DIR", "/models")
 
+
+def _repo_cache_dir(repo_id: str) -> Path:
+    return Path(MODEL_CACHE_DIR) / f"models--{repo_id.replace('/', '--')}"
+
+
+def _has_cached_repo(repo_id: str) -> bool:
+    snapshots_dir = _repo_cache_dir(repo_id) / "snapshots"
+    return snapshots_dir.exists() and any(snapshots_dir.iterdir())
+
+
+# On Windows, Hugging Face downloads may silently inherit the OS proxy settings
+# from Internet Options even when no proxy env vars are present. If the model is
+# already cached locally, prefer offline mode so the service can cold-start
+# reliably without touching the network.
+if _has_cached_repo("Systran/faster-whisper-large-v3"):
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
 # Test hook: when set, /transcribe will return an empty transcript without
 # actually invoking whisperx. Used by the smoke test so CI does not need the
 # multi-GB model weights.

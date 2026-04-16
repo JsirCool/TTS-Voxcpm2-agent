@@ -1,16 +1,14 @@
-"""P2 — Fish Audio TTS synthesis, Prefect task.
+"""P2 — local VoxCPM synthesis, Prefect task.
 
-Per ADR-001 §4.3 this task carries the ``fish-api`` concurrency tag so that
-a Prefect global concurrency limit governs all synthesis traffic, no
-matter how many worker replicas are running. Retry/backoff is also
-delegated to Prefect (``retries=3`` + explicit ``retry_delay_seconds``
-list) — we do **not** sleep / backoff by hand.
+The task still uses the same Prefect retry contract as the original Fish-backed
+implementation, but synthesis now routes to a local ``voxcpm-svc`` process so
+the harness can reuse an already-installed GPU runtime.
 
 Per-call lifecycle
 ------------------
 1. Load chunk + episode from DB. Validate preconditions.
 2. Write a ``stage_started`` event (fires pg_notify → SSE).
-3. Call :class:`FishTTSClient.synthesize` to get WAV bytes.
+3. Call the injected local TTS client to get WAV bytes.
 4. Compute WAV duration (wave module, pure stdlib).
 5. Upload bytes to MinIO under the canonical ``chunk_take_key``.
 6. In a single transaction:
@@ -26,16 +24,14 @@ Failure paths
 -------------
 - Chunk missing → ``DomainError("not_found")``, fatal.
 - Empty text_normalized → ``DomainError("invalid_input")``, fatal.
-- Fish auth error → :class:`FishAuthError`, fatal (Prefect sees fatal
-  but still retries; we rely on ADR §4.3 saying "credential issues are
-  escalated out-of-band" — at the flow layer A8 can map the exception to
-  a non-retryable state if needed).
-- Fish 429 / 5xx / network → let Prefect retry via ``retries=3``.
+- Local VoxCPM service unavailable / still loading → let Prefect retry.
 - MinIO upload failure → raise, no take row written.
 
 On any failure after ``stage_started`` the task writes a ``stage_failed``
-event so the SSE stream stays informative. The task then re-raises the
-original exception so Prefect can decide whether to retry.
+event so the SSE stream stays informative. Pre-validation failures do not
+emit events because there is no trustworthy execution state to report yet.
+The task then re-raises the original exception so Prefect can decide whether
+to retry.
 """
 
 from __future__ import annotations
@@ -53,10 +49,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.core.domain import DomainError, FishTTSParams, P2Result, TakeAppend
 from server.core.events import write_event
-from server.core.fish_client import (
-    FishAuthError,
-    FishClientError,
-    FishTTSClient,
+from server.core.voxcpm_client import (
+    VoxCPMClient,
+    VoxCPMClientError,
     build_params_from_env,
 )
 from server.core.repositories import ChunkRepo, TakeRepo
@@ -64,7 +59,7 @@ from server.core.storage import MinIOStorage, chunk_take_key
 
 log = logging.getLogger(__name__)
 
-# Text longer than this triggers a non-fatal warning (Fish may truncate).
+# Text longer than this triggers a non-fatal warning (mainly for auditability).
 TEXT_LENGTH_WARN_THRESHOLD = 3000
 
 
@@ -80,14 +75,14 @@ AsyncSessionCtxManager = Any  # async context manager yielding AsyncSession
 
 _session_factory: _SessionFactory | None = None
 _storage: MinIOStorage | None = None
-_fish_client_factory: Callable[[], FishTTSClient] | None = None
+_voxcpm_client_factory: Callable[[], VoxCPMClient] | None = None
 
 
 def configure_p2_dependencies(
     *,
     session_factory: _SessionFactory,
     storage: MinIOStorage,
-    fish_client_factory: Callable[[], FishTTSClient],
+    voxcpm_client_factory: Callable[[], VoxCPMClient],
 ) -> None:
     """Inject process-wide dependencies for the p2_synth task.
 
@@ -95,19 +90,19 @@ def configure_p2_dependencies(
     fixture. Keeping state at module level avoids having to thread
     ``FastAPI.state``-style containers through Prefect's task signature.
     """
-    global _session_factory, _storage, _fish_client_factory
+    global _session_factory, _storage, _voxcpm_client_factory
     _session_factory = session_factory
     _storage = storage
-    _fish_client_factory = fish_client_factory
+    _voxcpm_client_factory = voxcpm_client_factory
 
 
-def _require_deps() -> tuple[_SessionFactory, MinIOStorage, Callable[[], FishTTSClient]]:
-    if _session_factory is None or _storage is None or _fish_client_factory is None:
+def _require_deps() -> tuple[_SessionFactory, MinIOStorage, Callable[[], VoxCPMClient]]:
+    if _session_factory is None or _storage is None or _voxcpm_client_factory is None:
         raise RuntimeError(
             "p2_synth dependencies not configured. "
             "Call configure_p2_dependencies(...) before running the task."
         )
-    return _session_factory, _storage, _fish_client_factory
+    return _session_factory, _storage, _voxcpm_client_factory
 
 
 # ---------------------------------------------------------------------------
@@ -178,37 +173,25 @@ async def run_p2_synth(
     The ``@task`` wrapper below simply forwards to this. Keeping the body
     as a plain coroutine means unit tests do not need a Prefect runtime.
     """
-    session_factory, storage, fish_factory = _require_deps()
+    session_factory, storage, voxcpm_factory = _require_deps()
 
     # Normalise params input.
     if params is None:
-        fish_params = build_params_from_env()
+        tts_params = build_params_from_env()
     elif isinstance(params, FishTTSParams):
-        fish_params = params
+        tts_params = params
     else:
         merged = build_params_from_env().model_dump()
         merged.update(params)
-        fish_params = FishTTSParams(**merged)
+        tts_params = FishTTSParams(**merged)
 
     # 1. Load chunk + validate.
     async with _session_scope(session_factory) as session:
         chunk = await ChunkRepo(session).get(chunk_id)
         if chunk is None:
-            await _emit_stage_failed(
-                session_factory,
-                episode_id="unknown",
-                chunk_id=chunk_id,
-                error=f"chunk not found: {chunk_id}",
-            )
             raise DomainError("not_found", f"chunk not found: {chunk_id}")
         text = (chunk.text_normalized or "").strip()
         if not text:
-            await _emit_stage_failed(
-                session_factory,
-                episode_id=chunk.episode_id,
-                chunk_id=chunk_id,
-                error=f"chunk {chunk_id} has empty text_normalized",
-            )
             raise DomainError(
                 "invalid_input", f"chunk {chunk_id} has empty text_normalized"
             )
@@ -216,7 +199,7 @@ async def run_p2_synth(
 
         if len(text) > TEXT_LENGTH_WARN_THRESHOLD:
             log.warning(
-                "chunk %s text_normalized length=%d exceeds %d; Fish may truncate",
+                "chunk %s text_normalized length=%d exceeds %d; long-form synthesis may be slow",
                 chunk_id,
                 len(text),
                 TEXT_LENGTH_WARN_THRESHOLD,
@@ -236,11 +219,11 @@ async def run_p2_synth(
         )
         await session.commit()
 
-    # 3. Fish call — outside DB transaction, runs under the fish-api
-    #    concurrency limit via the Prefect task tag.
-    fish_client = fish_factory()
+    # 3. Local VoxCPM call — outside DB transaction, runs under the
+    #    voxcpm-local concurrency limit via the Prefect task tag.
+    voxcpm_client = voxcpm_factory()
     try:
-        wav_bytes = await fish_client.synthesize(text, fish_params)
+        wav_bytes = await voxcpm_client.synthesize(text, tts_params)
     except Exception as exc:  # noqa: BLE001 - classify downstream
         await _emit_stage_failed(
             session_factory,
@@ -252,7 +235,7 @@ async def run_p2_synth(
     finally:
         # If we own the client, close it; otherwise the caller owns it.
         try:
-            await fish_client.aclose()
+            await voxcpm_client.aclose()
         except Exception:  # pragma: no cover
             pass
 
@@ -261,9 +244,9 @@ async def run_p2_synth(
             session_factory,
             episode_id=episode_id,
             chunk_id=chunk_id,
-            error="fish returned empty bytes",
+            error="voxcpm returned empty bytes",
         )
-        raise FishClientError("Fish returned zero-length audio")
+        raise VoxCPMClientError("VoxCPM returned zero-length audio")
 
     duration_s = _wav_duration_seconds(wav_bytes)
 
@@ -289,7 +272,7 @@ async def run_p2_synth(
                 chunk_id=chunk_id,
                 audio_uri=audio_uri,
                 duration_s=duration_s,
-                params=fish_params.model_dump(),
+                params=tts_params.model_dump(),
             )
         )
         chunk_repo = ChunkRepo(session)
@@ -321,7 +304,7 @@ async def run_p2_synth(
         take_id=take_id,
         audio_uri=audio_uri,
         duration_s=duration_s,
-        params=fish_params.model_dump(),
+        params=tts_params.model_dump(),
     )
 
 
@@ -359,7 +342,7 @@ async def _emit_stage_failed(
 
 @task(
     name="p2-synth",
-    tags=["fish-api"],
+    tags=["voxcpm-local"],
     retries=3,
     retry_delay_seconds=[2, 8, 32],
 )
@@ -370,8 +353,7 @@ async def p2_synth(
     """Prefect-wrapped entry point. See :func:`run_p2_synth` for the body.
 
     The concurrency limit is enforced globally via
-    ``prefect concurrency-limit create fish-api <N>`` (ADR-001 §4.3) —
-    worker startup must register this limit before any flow runs.
+    ``prefect concurrency-limit create voxcpm-local <N>``.
     """
     return await run_p2_synth(chunk_id, params)
 

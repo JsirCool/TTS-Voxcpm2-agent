@@ -238,11 +238,31 @@ class TakeRepo:
     async def select(self, take_id: str) -> Take | None:
         return await self.session.get(Take, take_id)
 
+    async def select_many(self, take_ids: Sequence[str]) -> Sequence[Take]:
+        ids = [take_id for take_id in dict.fromkeys(take_ids) if take_id]
+        if not ids:
+            return []
+        stmt = select(Take).where(Take.id.in_(ids))
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
     async def list_by_chunk(self, chunk_id: str) -> Sequence[Take]:
         stmt = (
             select(Take)
             .where(Take.chunk_id == chunk_id)
             .order_by(Take.created_at.asc())
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_chunk_ids(self, chunk_ids: Sequence[str]) -> Sequence[Take]:
+        ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not ids:
+            return []
+        stmt = (
+            select(Take)
+            .where(Take.chunk_id.in_(ids))
+            .order_by(Take.chunk_id.asc(), Take.created_at.asc())
         )
         res = await self.session.execute(stmt)
         return res.scalars().all()
@@ -274,6 +294,18 @@ class StageRunRepo:
             select(StageRun)
             .where(StageRun.chunk_id == chunk_id)
             .order_by(StageRun.stage)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_chunk_ids(self, chunk_ids: Sequence[str]) -> Sequence[StageRun]:
+        ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not ids:
+            return []
+        stmt = (
+            select(StageRun)
+            .where(StageRun.chunk_id.in_(ids))
+            .order_by(StageRun.chunk_id.asc(), StageRun.stage.asc())
         )
         res = await self.session.execute(stmt)
         return res.scalars().all()

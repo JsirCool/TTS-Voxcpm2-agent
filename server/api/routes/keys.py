@@ -1,115 +1,85 @@
-"""API-key management routes — store keys as encrypted httpOnly cookies."""
+"""Local service status routes.
+
+Historically this module stored Fish/Groq API keys. The harness now runs
+entirely against local services, so the same UI entry point reports the health
+of VoxCPM and WhisperX instead.
+"""
 
 from __future__ import annotations
 
 import os
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from server.core.crypto import decrypt_value, encrypt_value
+router = APIRouter(tags=["services"])
 
-router = APIRouter(tags=["keys"])
-
-_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
-_COOKIE_MAX_AGE = 86400 * 365  # 1 year
-
-FISH_VERIFY_URL = "https://api.fish.audio/wallet/self/api-credit"
-GROQ_VERIFY_URL = "https://api.groq.com/openai/v1/models"
+DEFAULT_VOXCPM_URL = os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
+DEFAULT_WHISPERX_URL = os.environ.get("WHISPERX_URL", "http://127.0.0.1:7860")
 
 
 class KeysBody(BaseModel):
-    fish_key: str | None = None
-    groq_key: str | None = None
+    voxcpm_url: str | None = None
+    whisperx_url: str | None = None
 
 
 class KeysStatus(BaseModel):
-    fish: bool
-    groq: bool
+    voxcpm: bool
+    whisperx: bool
+    voxcpm_url: str
+    whisperx_url: str
+    voxcpm_error: str | None = None
+    whisperx_error: str | None = None
     error: str | None = None
 
 
-def _set_cookie(response: Response, name: str, value: str) -> None:
-    response.set_cookie(
-        key=name,
-        value=encrypt_value(value),
-        httponly=True,
-        secure=_COOKIE_SECURE,
-        samesite="strict",
-        max_age=_COOKIE_MAX_AGE,
-        path="/",
+async def _probe(url: str) -> tuple[bool, str | None]:
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{url.rstrip('/')}/healthz")
+            if resp.is_success:
+                return True, None
+            detail = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+            return False, detail
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+async def _build_status(
+    voxcpm_url: str = DEFAULT_VOXCPM_URL,
+    whisperx_url: str = DEFAULT_WHISPERX_URL,
+) -> KeysStatus:
+    voxcpm_ok, voxcpm_error = await _probe(voxcpm_url)
+    whisperx_ok, whisperx_error = await _probe(whisperx_url)
+
+    errors = [item for item in [voxcpm_error, whisperx_error] if item]
+    return KeysStatus(
+        voxcpm=voxcpm_ok,
+        whisperx=whisperx_ok,
+        voxcpm_url=voxcpm_url,
+        whisperx_url=whisperx_url,
+        voxcpm_error=voxcpm_error,
+        whisperx_error=whisperx_error,
+        error=" | ".join(errors) if errors else None,
     )
 
 
-async def _verify_fish(key: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(FISH_VERIFY_URL, headers={"Authorization": f"Bearer {key}"})
-            return r.is_success
-    except Exception:
-        return False
-
-
-async def _verify_groq(key: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(GROQ_VERIFY_URL, headers={"Authorization": f"Bearer {key}"})
-            return r.is_success
-    except Exception:
-        return False
-
-
 @router.post("/keys", response_model=KeysStatus)
-async def save_keys(body: KeysBody, request: Request, response: Response) -> KeysStatus:
-    errors: list[str] = []
-
-    # Carry forward existing cookies for keys not being updated
-    fish_ok = bool(request.cookies.get("__fish_key"))
-    groq_ok = bool(request.cookies.get("__groq_key"))
-
-    if body.fish_key:
-        if await _verify_fish(body.fish_key):
-            _set_cookie(response, "__fish_key", body.fish_key)
-            fish_ok = True
-        else:
-            errors.append("Fish API Key 无效")
-
-    if body.groq_key:
-        if await _verify_groq(body.groq_key):
-            _set_cookie(response, "__groq_key", body.groq_key)
-            groq_ok = True
-        else:
-            errors.append("Groq API Key 无效")
-
-    return KeysStatus(fish=fish_ok, groq=groq_ok, error="；".join(errors) if errors else None)
+async def save_keys(body: KeysBody) -> KeysStatus:
+    """Compatibility no-op: return current local service status."""
+    return await _build_status(
+        voxcpm_url=body.voxcpm_url or DEFAULT_VOXCPM_URL,
+        whisperx_url=body.whisperx_url or DEFAULT_WHISPERX_URL,
+    )
 
 
 @router.get("/keys/status", response_model=KeysStatus)
-async def keys_status(request: Request) -> KeysStatus:
-    fish_ok = False
-    enc = request.cookies.get("__fish_key")
-    if enc:
-        try:
-            decrypt_value(enc)
-            fish_ok = True
-        except Exception:
-            pass
-
-    groq_ok = False
-    enc = request.cookies.get("__groq_key")
-    if enc:
-        try:
-            decrypt_value(enc)
-            groq_ok = True
-        except Exception:
-            pass
-
-    return KeysStatus(fish=fish_ok, groq=groq_ok)
+async def keys_status() -> KeysStatus:
+    return await _build_status()
 
 
 @router.delete("/keys", response_model=KeysStatus)
-async def delete_keys(response: Response) -> KeysStatus:
-    response.delete_cookie("__fish_key", path="/", httponly=True, secure=_COOKIE_SECURE, samesite="strict")
-    response.delete_cookie("__groq_key", path="/", httponly=True, secure=_COOKIE_SECURE, samesite="strict")
-    return KeysStatus(fish=False, groq=False)
+async def delete_keys() -> KeysStatus:
+    """Compatibility no-op: local mode has no stored API keys to clear."""
+    return await _build_status()

@@ -1,4 +1,4 @@
-"""P2v — ASR transcription + quality verification, Prefect task.
+"""P2v — local WhisperX transcription + quality verification, Prefect task.
 
 Merges the former P3 (WhisperX transcription) and check3 (quality gate)
 into a single verify stage. On success the chunk transitions to ``verified``
@@ -9,7 +9,7 @@ Per-call lifecycle
 1. Load chunk + selected take from DB. Validate preconditions.
 2. Write a ``verify_started`` event (fires pg_notify -> SSE).
 3. Download the take WAV from MinIO.
-4. POST multipart (file=WAV, language=episode language) to whisperx-svc.
+4. POST multipart (file=WAV, language=episode language) to local whisperx-svc.
 5. Upload transcript JSON to MinIO under ``chunk_transcript_key``.
 6. Run 2-dimensional scoring via ``p2v_scoring.evaluate()``:
    duration_ratio, silence (phonetic/char/asr disabled, always 1.0).
@@ -17,8 +17,8 @@ Per-call lifecycle
    - ``chunks.status`` -> ``verified``
    - ``verify_finished`` event with scores + diagnosis
 8. If weighted_score < 0.7 -> fail:
-   - ``chunks.status`` stays ``synth_done`` (awaiting repair)
-   - ``verify_failed`` event with scores + diagnosis
+   - ``chunks.status`` -> ``needs_review``
+   - ``verify_failed`` + ``needs_review`` events with scores + diagnosis
 
 Failure paths
 -------------
@@ -78,8 +78,6 @@ _session_factory: _SessionFactory | None = None
 _storage: MinIOStorage | None = None
 _http_client_factory: Callable[[], httpx.AsyncClient] | None = None
 _whisperx_url: str = DEFAULT_WHISPERX_URL
-_groq_api_key: str | None = None
-_groq_proxy: str | None = None
 
 
 def configure_p2v_dependencies(
@@ -88,18 +86,13 @@ def configure_p2v_dependencies(
     storage: MinIOStorage,
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
     whisperx_url: str = DEFAULT_WHISPERX_URL,
-    groq_api_key: str | None = None,
-    groq_proxy: str | None = None,
 ) -> None:
     """Inject process-wide dependencies for the p2v_verify task."""
     global _session_factory, _storage, _http_client_factory, _whisperx_url
-    global _groq_api_key, _groq_proxy
     _session_factory = session_factory
     _storage = storage
     _http_client_factory = http_client_factory
     _whisperx_url = whisperx_url
-    _groq_api_key = groq_api_key
-    _groq_proxy = groq_proxy
 
 
 def _require_deps() -> tuple[_SessionFactory, MinIOStorage]:
@@ -253,39 +246,25 @@ async def run_p2v_verify(
         await _emit_stage_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
         raise DomainError("invalid_state", f"take WAV is empty for chunk {chunk_id}")
 
-    # 4. ASR transcription: Groq Whisper (if configured) or local WhisperX.
-    groq_key = _groq_api_key or os.environ.get("GROQ_API_KEY", "")
+    # 4. ASR transcription: local WhisperX only.
     whisperx_url = _whisperx_url or os.environ.get("WHISPERX_URL", "")
 
-    if groq_key:
-        # Use Groq Whisper API.
-        from server.core.groq_asr_client import GroqASRClient
-
-        groq_client = GroqASRClient(api_key=groq_key, proxy=_groq_proxy)
-        try:
-            transcript_data = await groq_client.transcribe(wav_bytes, language)
-        except Exception as exc:
-            _err = f"groq asr call failed: {type(exc).__name__}: {exc}"
-            await _emit_verify_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
-            await _emit_stage_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
-            raise
-    elif whisperx_url:
-        # Use local WhisperX service.
-        client = _get_http_client()
-        try:
-            transcript_data = await _call_whisperx(client, wav_bytes, language)
-        except Exception as exc:
-            _err = f"whisperx call failed: {type(exc).__name__}: {exc}"
-            await _emit_verify_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
-            await _emit_stage_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
-            raise
-        finally:
-            await client.aclose()
-    else:
-        _err = "ASR 未配置: 需要 Groq API Key 或 WhisperX URL"
+    if not whisperx_url:
+        _err = "ASR not configured: WHISPERX_URL is empty"
         await _emit_verify_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
         await _emit_stage_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
-        raise DomainError("auth_required", _err)
+        raise DomainError("invalid_state", _err)
+
+    client = _get_http_client()
+    try:
+        transcript_data = await _call_whisperx(client, wav_bytes, language)
+    except Exception as exc:
+        _err = f"whisperx call failed: {type(exc).__name__}: {exc}"
+        await _emit_verify_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
+        await _emit_stage_failed(session_factory, episode_id=episode_id, chunk_id=chunk_id, error=_err)
+        raise
+    finally:
+        await client.aclose()
 
     # Validate transcript structure.
     try:
@@ -360,8 +339,9 @@ async def run_p2v_verify(
             original_text=original_text,
         )
     else:
-        # FAIL — keep synth_done, record diagnostic.
+        # FAIL: move the chunk into needs_review and record the diagnostic.
         async with _session_scope(session_factory) as session:
+            await ChunkRepo(session).set_status(chunk_id, "needs_review")
             failed_at = datetime.now(timezone.utc)
             await write_event(
                 session,
@@ -376,6 +356,13 @@ async def run_p2v_verify(
                     "transcribed_text": transcribed_text,
                     "failed_at": failed_at.isoformat(),
                 },
+            )
+            await write_event(
+                session,
+                episode_id=episode_id,
+                chunk_id=chunk_id,
+                kind="needs_review",
+                payload={"reason": "P2v quality check failed"},
             )
             await session.commit()
 

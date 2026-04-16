@@ -51,7 +51,7 @@ interface HarnessState {
   runEpisode: (mode: string, chunkIds?: string[]) => Promise<void>;
   applyEdits: (episodeId: string) => Promise<void>;
   retryChunk: (epId: string, cid: string, stage: StageName, cascade: boolean) => Promise<void>;
-  createEpisode: (id: string, file: File) => Promise<void>;
+  createEpisode: (id: string, file: File, options?: { title?: string; config?: Record<string, unknown> }) => Promise<void>;
   deleteEpisode: (id: string) => Promise<void>;
   duplicateEpisode: (id: string, newId: string) => Promise<void>;
   archiveEpisode: (id: string) => Promise<void>;
@@ -157,8 +157,8 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     await api.retryChunk(epId, cid, stage, cascade);
   },
 
-  createEpisode: async (id, file) => {
-    await api.createEpisode(id, file);
+  createEpisode: async (id, file, options) => {
+    await api.createEpisode(id, file, options);
   },
 
   deleteEpisode: async (id) => {
