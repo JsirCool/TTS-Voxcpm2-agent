@@ -101,6 +101,11 @@ function getChunkProgress(chunk: Chunk, processingStage: StageName | null | unde
   };
 }
 
+function getStringParam(params: Record<string, unknown> | undefined, key: string): string {
+  const value = params?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export const ChunkRow = memo(function ChunkRow({
   chunk,
   displayMode,
@@ -122,6 +127,17 @@ export const ChunkRow = memo(function ChunkRow({
   const hasSubtitleField = chunk.subtitleText != null;
 
   const currentTake = chunk.takes.find((take) => take.id === chunk.selectedTakeId);
+  const currentTakeParams = (currentTake?.params ?? {}) as Record<string, unknown>;
+  const currentControlPrompt = getStringParam(currentTakeParams, "control_prompt");
+  const currentReferenceAudio = getStringParam(currentTakeParams, "reference_audio_path");
+  const currentPromptAudio = getStringParam(currentTakeParams, "prompt_audio_path");
+  const showControlPrompt = !currentPromptAudio && Boolean(currentTake);
+  const controlPromptValue = currentControlPrompt || "未设置";
+  const currentModeLabel = currentPromptAudio
+    ? "极致克隆"
+    : currentReferenceAudio
+      ? "可控克隆"
+      : "声音设计";
   const cacheBust = currentTake?.createdAt
     ? `?v=${encodeURIComponent(currentTake.createdAt)}`
     : `?v=${chunk.charCount}`;
@@ -239,6 +255,20 @@ export const ChunkRow = memo(function ChunkRow({
         {chunk.stageRuns.length > 0 ? (
           <div className="mt-1">
             <StagePipeline stageRuns={chunk.stageRuns} onStageClick={onStageClick} compact />
+          </div>
+        ) : null}
+
+        {showControlPrompt ? (
+          <div className="mt-1 rounded-md border border-violet-200/80 bg-violet-50/70 px-2 py-1.5 text-[11px] text-violet-900 dark:border-violet-900/60 dark:bg-violet-950/20 dark:text-violet-200">
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/50 dark:text-violet-200">
+                {currentModeLabel}
+              </span>
+              <span className="font-semibold">Control Prompt</span>
+            </div>
+            <div className="mt-1 break-all font-mono text-[10px] leading-relaxed text-violet-800 dark:text-violet-200/90">
+              {controlPromptValue}
+            </div>
           </div>
         ) : null}
 
@@ -386,7 +416,7 @@ export const ChunkRow = memo(function ChunkRow({
             type="button"
             onClick={isEditing ? cancelEditing : onEdit}
             title={isEditing ? "关闭编辑" : "编辑"}
-            className={`w-7 h-7 inline-flex items-center justify-center rounded ${
+            className={`h-9 w-9 inline-flex items-center justify-center rounded-md text-[15px] ${
               isEditing
                 ? "bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200"
                 : "hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300"
