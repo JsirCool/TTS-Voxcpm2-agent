@@ -91,6 +91,17 @@ async def list_tts_presets() -> TtsPresetIndexResponse:
     )
 
 
+@router.post("/tts-presets/import", response_model=TtsPresetIndexResponse)
+async def import_tts_presets(body: ImportPresetRequest) -> TtsPresetIndexResponse:
+    import_preset_document(body.scope, body.data, replace=body.replace)
+    return await list_tts_presets()
+
+
+@router.get("/tts-presets/export/{scope}", response_model=ExportPresetResponse)
+async def export_tts_presets(scope: PresetScope) -> ExportPresetResponse:
+    return ExportPresetResponse(scope=scope, data=export_preset_document(scope))
+
+
 @router.post("/tts-presets/{scope}", response_model=TtsPresetView, status_code=201)
 async def create_tts_preset(scope: PresetScope, body: CreatePresetRequest) -> TtsPresetView:
     record = create_preset(scope, body.name, body.config, make_default=body.make_default)
@@ -137,14 +148,3 @@ async def delete_tts_preset(scope: PresetScope, preset_id: str) -> dict[str, boo
 async def make_default_tts_preset(scope: PresetScope, preset_id: str) -> dict[str, bool]:
     set_default_preset(scope, preset_id)
     return {"ok": True}
-
-
-@router.post("/tts-presets/import", response_model=TtsPresetIndexResponse)
-async def import_tts_presets(body: ImportPresetRequest) -> TtsPresetIndexResponse:
-    import_preset_document(body.scope, body.data, replace=body.replace)
-    return await list_tts_presets()
-
-
-@router.get("/tts-presets/export/{scope}", response_model=ExportPresetResponse)
-async def export_tts_presets(scope: PresetScope) -> ExportPresetResponse:
-    return ExportPresetResponse(scope=scope, data=export_preset_document(scope))
