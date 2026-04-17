@@ -1,44 +1,62 @@
-# TTS Agent Harness — 文档索引
+# TTS Agent Harness Docs / 文档索引
 
-## 运维
+## Current Focus / 当前主线
 
-| # | 文档 | 内容 |
+This repository is maintained for local use.
+
+当前仓库以本地使用为主。
+
+If you are starting from scratch, read these first:
+
+- [`../README.md`](../README.md)
+- [`../WINDOWS-START.md`](../WINDOWS-START.md)
+
+如果你是第一次接触这个仓库，优先阅读：
+
+- [`../README.md`](../README.md)
+- [`../WINDOWS-START.md`](../WINDOWS-START.md)
+
+## Operations / 运维
+
+| # | Doc | Description |
 |---|---|---|
-| 001 | [setup](001-setup.md) | 开发环境搭建、端口表、日常命令 |
-| 002 | [config-design](002-config-design.md) | 统一配置管理（.env 切环境） |
+| 001 | [setup](001-setup.md) | Local development setup, ports, and daily commands |
+| 002 | [config-design](002-config-design.md) | Unified configuration design and environment switching |
 
-## 产品
+## Product / 产品
 
-| # | 文档 | 内容 |
+| # | Doc | Description |
 |---|---|---|
-| 003 | [user-stories](003-user-stories.md) | 用户故事、功能点清单、代码链路审计 |
+| 003 | [user-stories](003-user-stories.md) | User stories and feature-oriented scenarios |
+| — | [product](product.md) | Current local-only product overview |
 
-## 架构
+## Architecture / 架构
 
-| # | 文档 | 内容 |
+| # | Doc | Description |
 |---|---|---|
-| ADR-001 | [adr/001-server-stack](adr/001-server-stack.md) | 服务端技术选型（Prefect + FastAPI + Postgres + MinIO） |
-| 004 | [frontend-architecture](004-frontend-architecture.md) | 前端分层设计（Zustand + shadcn + openapi-fetch） |
-| 015 | [error-handling-design](015-error-handling-design.md) | 错误处理设计 |
-| 016 | [dev-mode-resilience](016-dev-mode-resilience.md) | 开发模式容错设计 |
+| ADR-001 | [adr/001-server-stack](adr/001-server-stack.md) | Server-side stack decisions |
+| 004 | [frontend-architecture](004-frontend-architecture.md) | Frontend structure and state flow |
+| 015 | [error-handling-design](015-error-handling-design.md) | Error handling design |
+| 016 | [dev-mode-resilience](016-dev-mode-resilience.md) | Dev-mode resilience strategy |
 
-## 测试
+## Testing / 测试
 
-| # | 文档 | 内容 |
+| # | Doc | Description |
 |---|---|---|
-| 006 | [e2e-plan](006-e2e-plan.md) | 全流程 E2E 测试计划（Playwright） |
-| 007 | [e2e-test-cases](007-e2e-test-cases.md) | 细粒度测试用例（15 个 TC） |
+| 006 | [e2e-plan](006-e2e-plan.md) | End-to-end test plan |
+| 007 | [e2e-test-cases](007-e2e-test-cases.md) | Detailed E2E test cases |
 
-## 未来方向
+## Future / 未来方向
 
-| # | 文档 | 内容 |
+| # | Doc | Description |
 |---|---|---|
-| 008 | [roadmap-auto-validation](008-roadmap-auto-validation.md) | 自动校验与自动修复 pipeline |
-| 017 | [llm-agent-design](017-llm-agent-design.md) | LLM Agent 设计（二期） |
+| 008 | [roadmap-auto-validation](008-roadmap-auto-validation.md) | Validation and automation roadmap |
+| 017 | [llm-agent-design](017-llm-agent-design.md) | LLM agent design notes |
 
-## 归档
+## Archive / 归档
 
-| 目录 | 内容 |
+| Path | Description |
 |---|---|
-| [worklogs/](worklogs/) | Agent A1-A11 的工作日志 + W1-W3 wave gate 报告 |
-| [_archive/](_archive/) | 已完成/过时的设计文档（005, 009-014, ADR-002） |
+| [archive/fly-deployment/](archive/fly-deployment/) | Archived historical deployment files and notes |
+| [worklogs/](worklogs/) | Historical work logs and wave reports |
+| [_archive/](_archive/) | Older design documents that are no longer active |

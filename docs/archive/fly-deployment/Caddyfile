@@ -1,8 +1,8 @@
-# Reverse proxy — unified entry point on :8080
-# API routes → FastAPI (8100), everything else → Next.js (3010)
+# Reverse proxy - unified entry point on :8080
+# API routes -> FastAPI (8100), everything else -> Next.js (3010)
 
 :8080 {
-	# SSE stream — flush immediately, no buffering, no timeout
+	# SSE stream - flush immediately, no buffering, no timeout
 	handle /episodes/*/stream {
 		reverse_proxy localhost:8100 {
 			flush_interval -1
@@ -38,7 +38,7 @@
 		reverse_proxy localhost:8100
 	}
 
-	# Everything else → Next.js
+	# Everything else -> Next.js
 	handle {
 		reverse_proxy localhost:3010
 	}

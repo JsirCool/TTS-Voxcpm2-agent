@@ -1,6 +1,6 @@
 # ============================================================
-# TTS Agent Harness — Single container
-# Caddy (8080) → FastAPI (8100) + Next.js (3010)
+# TTS Agent Harness - Single container
+# Caddy (8080) -> FastAPI (8100) + Next.js (3010)
 # ============================================================
 
 # Stage 1: build Next.js

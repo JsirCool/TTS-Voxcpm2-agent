@@ -1,161 +1,179 @@
-# TTS Agent Harness — 产品功能文档
+# TTS Agent Harness Product Overview / 产品概览
 
-## 产品定位
+## Positioning / 产品定位
 
-视频脚本转语音 + 字幕的生产工具。解决的核心问题：**TTS 引擎对中英混合文本的发音不稳定，需要反复调整文本、试听、重试，直到每一句都准确为止**。
+TTS Agent Harness is a local production tool for turning scripts into voiceover, subtitles, and Remotion-friendly export assets.
 
-传统流程是手动调用 TTS API → 下载音频 → 本地试听 → 修改文本 → 重新调用，循环往复。本工具将这个过程产品化：上传脚本 → 自动合成 → 逐句试听 → 一键修改重试 → 导出成品。
+TTS Agent Harness 是一个本地生产工具，用来把脚本转换成配音、字幕和适合 Remotion 使用的导出素材。
 
-## 目标用户
+It is designed for workflows where creators need to repeatedly synthesize, review, fix, and export narration at chunk level instead of manually juggling API calls and temporary files.
 
-视频创作者、播客制作者，需要将文字稿批量转为高质量语音，并生成对应的时间轴字幕。
+它面向这样一种工作流：创作者需要以 chunk 为单位反复合成、试听、修正、重跑和导出，而不是手工管理 API 调用与零散临时文件。
 
-## 核心工作流
+## Target Users / 目标用户
 
-```
-上传脚本 → 自动切分 → 批量合成 → 逐句质检 → 修改重试 → 导出产物
-```
+- video creators
+- podcasters
+- short-form narration teams
+- creators using Remotion as the downstream editor
 
-### 1. 上传脚本
+- 视频创作者
+- 播客制作人
+- 短视频口播团队
+- 使用 Remotion 作为下游编辑器的创作者
 
-输入一个 JSON 格式的视频脚本，包含标题和分段文本：
+## Supported Runtime / 支持的运行方式
 
-```json
-{
-  "title": "AI 基础设施概览",
-  "segments": [
-    { "id": 1, "type": "hook", "text": "OpenAI 刚发布了 GPT-V..." },
-    { "id": 2, "type": "content", "text": "第Ⅱ章，我们来回顾 transformer..." }
-  ]
-}
-```
+The current repository officially supports local operation only.
 
-每个 segment 对应视频的一个镜头（shot），`text` 同时作为 TTS 输入和字幕来源。
+当前仓库官方只支持本地运行。
 
-### 2. 自动切分（P1）
+Main components:
 
-系统按 segment 将脚本切分为 chunks，每个 chunk 是独立的合成单元。切分后会自动校验格式合法性。
+- Browser / Next.js UI
+- FastAPI API
+- local VoxCPM service
+- local WhisperX service
+- local Postgres + MinIO + Prefect via Docker Compose
 
-### 3. 批量合成（P2 → P2c → P2v）
+主要组件包括：
 
-点击"合成全部"，系统对每个 chunk 执行：
+- 浏览器 / Next.js 界面
+- FastAPI API
+- 本地 VoxCPM 服务
+- 本地 WhisperX 服务
+- 通过 Docker Compose 启动的本地 Postgres + MinIO + Prefect
 
-- **P2 TTS 合成**：调用 Fish Audio S2-Pro API，将文本合成为 WAV 音频
-- **P2c WAV 校验**：验证音频格式（采样率、声道数、时长）
-- **P2v 转写验证**：用 ASR（Groq Whisper）将音频转写回文字，与原文比对，检测发音偏差
+## Core Flow / 核心流程
 
-每个 chunk 可以独立重试，不影响其他 chunk。
-
-### 4. 逐句试听与质检
-
-合成完成后，每个 chunk 显示：
-
-- **播放按钮**：试听当前 take 的音频
-- **卡拉 OK 字幕**：播放时逐字高亮，可点击任意文字跳转到对应时间点
-- **Stage 进度条**：可视化每个处理阶段的状态（完成/失败/运行中）
-- **历史 Take 列表**：保留每次合成的结果，可对比不同版本
-
-### 5. 修改文本与重试
-
-当 TTS 发音不准确时（常见于英文缩写、品牌名、中英混合文本）：
-
-1. 点击 chunk 的编辑按钮
-2. 修改 TTS 源文本（`text_normalized`），例如：
-   - `第Ⅱ章` → `第2章`（罗马数字读错）
-   - `transformer` → `trans former`（加空格帮助断词）
-   - `USB-C` → `USB type C`（缩写展开）
-3. 点击 "Stage Change" 暂存修改
-4. 点击 "Apply All" 统一执行
-5. 系统只对修改过的 chunk 重新合成，保留未修改的结果
-
-修改后的新 take 会追加到历史列表，可随时切换回之前的版本。
-
-### 6. 字幕生成（P5）
-
-合成通过验证后，系统基于音频时长和字符分布，自动生成时间对齐的逐字字幕。TTS 控制标记（`[break]`、`[breath]`、`[long break]`等）会被自动过滤，不出现在字幕中。
-
-### 7. 拼接与导出（P6）
-
-所有 chunk 验证通过后，系统自动：
-
-- 按 shot 拼接音频，插入 padding 和间隔
-- 偏移字幕时间戳，对齐拼接后的时间线
-- 打包导出 zip
-
-导出产物：
-
-```
-episode-export.zip/
-  shot01.wav          — 每个镜头的拼接音频
-  shot02.wav
-  ...
-  durations.json      — [{id, duration_s, file}]
-  subtitles.json      — {shot_id: [{id, text, start, end}]}
+```text
+Import script -> Split into chunks -> Synthesize -> Verify -> Edit / Retry -> Generate subtitles -> Export
 ```
 
-下游可直接被 Remotion 等视频合成框架消费。
+UI stage labels:
 
-## 功能特性
+- `切稿` = `P1`
+- `初检` = `P1c`
+- `配音` = `P2`
+- `校音` = `P2c`
+- `复核` = `P2v`
+- `出字` = `P5`
+- `拼轨` = `P6`
+- `总检` = `P6v`
 
-### API Key 管理
+## Input Model / 输入模型
 
-- 用户在页面配置自己的 Fish Audio 和 Groq API Key
-- Key 通过加密 Cookie 存储在服务端，不会明文传输或出现在日志中
-- 保存时自动验证 Key 有效性
+The tool accepts either:
 
-### TTS 配置
+- `script.json`
+- pasted text that is converted internally into the episode JSON structure
 
-每个脚本可携带 `tts_config` 覆盖默认参数：
+工具当前支持两种输入：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| model | TTS 模型 | s2-pro |
-| temperature | 采样温度 | 0.3 |
-| top_p | Nucleus sampling | 0.5 |
-| speed | 语速（后处理 atempo） | 1.25 |
-| reference_id | 声音克隆 ID | 无 |
-| normalize | 是否让引擎做文本归一化 | false |
+- `script.json`
+- 直接输入文本，由系统内部转换成 episode JSON
 
-### 控制标记
+Each episode is organized into `segments`, and each segment is split into executable `chunks`.
 
-文本中可插入 S2-Pro 控制标记，用于精细控制语音节奏：
+每个 episode 先按 `segments` 组织，再继续切成可执行的 `chunks`。
 
-- `[break]` / `[long break]` — 停顿
-- `[breath]` / `[inhale]` — 呼吸声
-- `[pause]` / `[long pause]` — 兼容写法
+## Key Features / 关键能力
 
-这些标记只影响 TTS 合成，字幕生成时会自动过滤。
+### 1. Local TTS and verification / 本地配音与复核
 
-### Episode 管理
+- local VoxCPM for synthesis
+- local WhisperX for ASR-based verification
+- per-chunk retry
+- per-chunk `Control Prompt` override for supported modes
 
-- **创建**：上传 script.json，指定 episode ID
-- **锁定/解锁**：锁定后不可修改，防止误操作和自动清理
-- **自动清理**：存储超限时按时间顺序删除最旧的未锁定 episode
-- **归档**：标记为归档状态
+- 本地 VoxCPM 合成
+- 本地 WhisperX 回写复核
+- 支持按 chunk 重跑
+- 在支持的模式下，可为每个 chunk 单独覆盖 `Control Prompt`
 
-### 主题
+### 2. Review workflow / 审核返工工作流
 
-支持浅色/深色主题，跟随系统偏好或手动切换。
+- abnormal-chunk workbench
+- quick retry buttons beside each chunk
+- inline diff-style context between source text and ASR result
+- take history and take switching
 
-## 技术架构
+- 异常 chunk 工作台
+- 每条 chunk 旁边的快捷重跑
+- 原文与 ASR 回写的对照上下文
+- take 历史与切换
 
+### 3. TTS presets / TTS 预设
+
+- project presets
+- global presets
+- default preset for new episodes
+- import / export presets
+
+- 项目预设
+- 全局预设
+- 新建 episode 默认预设
+- 预设导入 / 导出
+
+### 4. Export / 导出
+
+Exports are designed for downstream editing and Remotion use.
+
+导出结果面向下游编辑和 Remotion 使用。
+
+Current export bundle includes:
+
+- per-shot WAV files such as `shot01.wav`
+- final combined audio `episode.wav`
+- final subtitle file `episode.srt`
+- `durations.json`
+- `subtitles.json`
+- `remotion-manifest.json`
+
+当前导出包包含：
+
+- 按 shot 拆分的 WAV，例如 `shot01.wav`
+- 整集拼接音频 `episode.wav`
+- 整集字幕文件 `episode.srt`
+- `durations.json`
+- `subtitles.json`
+- `remotion-manifest.json`
+
+## Architecture Snapshot / 架构概览
+
+```text
+Browser -> Next.js (3010) -> FastAPI (8100) -> task pipeline
+                                             -> PostgreSQL + MinIO
+                                             -> local voxcpm-svc
+                                             -> local whisperx-svc
 ```
-浏览器 → Caddy (反向代理) → FastAPI + Next.js
-                              ↓
-                    PostgreSQL + MinIO/Tigris
-```
 
-- **TTS 引擎**：Fish Audio S2-Pro
-- **ASR 引擎**：Groq Whisper API（线上）/ WhisperX（本地）
-- **后端**：FastAPI + SQLAlchemy + Alembic
-- **前端**：Next.js 16 + Zustand + Tailwind CSS v4 + Radix UI
-- **存储**：PostgreSQL（元数据）+ MinIO/Tigris（音频文件）
-- **音频处理**：ffmpeg
-- **部署**：Fly.io（东京机房）
+## Storage Model / 存储模型
 
-## 已知限制
+- PostgreSQL stores metadata
+- MinIO stores generated audio, subtitles, and scripts
+- `storage-mirror` can mirror object storage to a local visible directory
+- `voice_sourse` stores local reference audio used for cloning
 
-- Fish Audio S2-Pro 对英文缩写和品牌名的发音不稳定，需要人工调整 text_normalized
-- 合成速度取决于 Fish Audio API 响应，高峰期可能较慢
-- 当前不支持多声音（每个 episode 使用同一个 reference_id）
-- 字幕时间戳基于字符加权分配，非精确音素级对齐
+- PostgreSQL 存元数据
+- MinIO 存生成出的音频、字幕和脚本
+- `storage-mirror` 可把对象存储镜像到本地可见目录
+- `voice_sourse` 存放用于克隆的本地参考音频
+
+## Non-Goals / 非目标
+
+The repository no longer treats managed cloud deployment as part of the default product story.
+
+当前仓库不再把托管云部署视为默认产品路径的一部分。
+
+## Known Constraints / 已知限制
+
+- model files and caches must be prepared locally
+- local paths are machine-specific and need local configuration
+- Windows remains the primary documented path
+- audio quality still depends on source text, prompt quality, and model behavior
+
+- 模型文件与缓存需要自行准备
+- 本地路径与机器环境绑定，需要本地配置
+- 当前文档主要围绕 Windows 路径编写
+- 实际配音质量仍受文本、prompt 和模型行为影响
