@@ -1429,7 +1429,7 @@ def _copy_directory_contents(source_root: Path, target_root: Path) -> None:
 @router.get("/episodes/{episode_id}/export")
 async def export_episode(
     episode_id: str,
-    format: str = Query("shots", description="Export format: shots (per-shot WAV + subtitles)"),
+    format: str = Query("shots", description="Export format: shots (per-shot WAV + final episode WAV/SRT)"),
     fps: int = Query(DEFAULT_EXPORT_FPS, ge=1, le=120),
     session: AsyncSession = Depends(get_session),
     storage: MinIOStorage = Depends(get_storage),
@@ -1439,6 +1439,8 @@ async def export_episode(
     Produces Remotion-compatible output:
       {episode_id}/
         shot01.wav, shot02.wav, ...
+        episode.wav
+        episode.srt
         subtitles.json   — {shot_id: [{id, text, start, end}]} with shot-level offsets
         durations.json   — [{id, duration_s, file}]
     """
