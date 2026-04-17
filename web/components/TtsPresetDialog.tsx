@@ -21,7 +21,7 @@ function scopeLabel(scope: PresetScope): string {
 function describeImportError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/reference_audio_path|prompt_audio_path|prompt_text/.test(message)) {
-    return `${message}。如果这是从别的机器导出的预设，请先把里面的本地音频路径改成当前机器可用的绝对路径。`;
+    return `${message}。现在建议把音频路径改成相对于 voice_sourse 的相对路径，例如 111.m4a。`;
   }
   return message;
 }

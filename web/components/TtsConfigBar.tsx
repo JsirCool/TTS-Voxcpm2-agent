@@ -435,7 +435,8 @@ function ConfigForm({
             <label className="mb-1 flex items-center gap-1 text-xs text-neutral-600">
               Reference Audio Path
               <HelpTip>
-                决定“像谁说”。填本机绝对路径后，VoxCPM 会参考这段音频的音色做可控克隆。
+                决定“像谁说”。现在统一填写相对于 <code>voice_sourse</code> 的路径，
+                例如 <code>111.m4a</code> 或 <code>主播A/开场.wav</code>。
               </HelpTip>
             </label>
             <input
@@ -443,7 +444,7 @@ function ConfigForm({
               value={form.reference_audio_path}
               onChange={(e) => setField("reference_audio_path", e.target.value)}
               className={inputClass}
-              placeholder="例如：E:\\audio\\speaker.wav"
+              placeholder="例如：111.m4a"
             />
           </div>
         ) : null}
@@ -454,7 +455,7 @@ function ConfigForm({
               <label className="mb-1 flex items-center gap-1 text-xs text-neutral-600">
                 Prompt Audio Path
                 <HelpTip>
-                  决定“从哪句继续说”。这段音频会作为前文上下文，用于高保真续写。
+                  决定“从哪句继续说”。这里也填写相对于 <code>voice_sourse</code> 的路径。
                 </HelpTip>
               </label>
               <input
@@ -462,7 +463,7 @@ function ConfigForm({
                 value={form.prompt_audio_path}
                 onChange={(e) => setField("prompt_audio_path", e.target.value)}
                 className={inputClass}
-                placeholder="例如：E:\\audio\\prompt.wav"
+                placeholder="例如：111.m4a"
               />
             </div>
 

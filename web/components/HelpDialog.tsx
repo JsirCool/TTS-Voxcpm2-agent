@@ -65,7 +65,7 @@ export function HelpDialog({ open, onClose }: Props) {
     "cfg_value": 2.0,
     "inference_timesteps": 10,
     "control_prompt": "young female voice, warm and gentle",
-    "reference_audio_path": "E:\\\\audio\\\\speaker.wav",
+    "reference_audio_path": "speaker.wav",
     "normalize": false,
     "denoise": false
   },
@@ -91,8 +91,8 @@ export function HelpDialog({ open, onClose }: Props) {
                     ["cfg_value", "number", "2.0", "VoxCPM guidance scale"],
                     ["inference_timesteps", "number", "10", "扩散步数，越高越稳但越慢"],
                     ["control_prompt", "string", '""', "自动拼成 `(control)正文` 的风格提示"],
-                    ["reference_audio_path", "string", '""', "本地参考音频路径，用于音色克隆"],
-                    ["prompt_audio_path", "string", '""', "本地 prompt 音频路径，用于高保真续写"],
+                    ["reference_audio_path", "string", '""', "相对于 voice_sourse 的参考音频路径，用于音色克隆"],
+                    ["prompt_audio_path", "string", '""', "相对于 voice_sourse 的 prompt 音频路径，用于高保真续写"],
                     ["prompt_text", "string", '""', "与 prompt 音频对应的真实文本"],
                     ["normalize", "boolean", "false", "是否启用文本标准化"],
                     ["denoise", "boolean", "false", "是否对参考音频做降噪增强"],
@@ -113,7 +113,7 @@ export function HelpDialog({ open, onClose }: Props) {
               <li><code className={codeClass}>VOXCPM_URL</code> 指向本地 VoxCPM 服务。</li>
               <li><code className={codeClass}>WHISPERX_URL</code> 指向本地 WhisperX 服务。</li>
               <li><code className={codeClass}>VOXCPM_CFG_VALUE</code> / <code className={codeClass}>VOXCPM_INFERENCE_TIMESTEPS</code> 可覆盖默认推理参数。</li>
-              <li><code className={codeClass}>VOXCPM_REFERENCE_AUDIO_PATH</code> 可设置全局默认参考音频。</li>
+              <li><code className={codeClass}>VOXCPM_REFERENCE_AUDIO_PATH</code> 可设置全局默认参考音频，支持相对于 <code className={codeClass}>voice_sourse</code> 的路径。</li>
             </ul>
           </section>
 

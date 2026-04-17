@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from .domain import FishTTSParams
+from .tts_presets import resolve_audio_path
 
 DEFAULT_VOXCPM_URL = os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
@@ -72,10 +73,13 @@ class VoxCPMClient:
         if control_prompt:
             text = f"({control_prompt}){text}"
 
+        reference_audio = resolve_audio_path(params.reference_audio_path)
+        prompt_audio = resolve_audio_path(params.prompt_audio_path)
+
         return {
             "text": text,
-            "reference_audio_path": params.reference_audio_path,
-            "prompt_audio_path": params.prompt_audio_path,
+            "reference_audio_path": str(reference_audio) if reference_audio else None,
+            "prompt_audio_path": str(prompt_audio) if prompt_audio else None,
             "prompt_text": params.prompt_text,
             "cfg_value": params.cfg_value,
             "inference_timesteps": params.inference_timesteps,

@@ -23,6 +23,11 @@ CONFIG_KEYS = (
     "denoise",
 )
 
+AUDIO_PATH_FIELDS = (
+    "reference_audio_path",
+    "prompt_audio_path",
+)
+
 
 @dataclass
 class TtsPresetRecord:
@@ -42,6 +47,24 @@ class TtsPresetDocument:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def get_audio_path_root() -> Path:
+    raw = os.environ.get("HARNESS_AUDIO_PATH_ROOT")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _repo_root().parent.resolve()
+
+
+def get_voice_source_dir() -> Path:
+    raw = os.environ.get("HARNESS_VOICE_SOURCE_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (get_audio_path_root() / "voice_sourse").resolve()
+
+
+def get_legacy_voice_source_dir() -> Path:
+    return (get_audio_path_root() / "VI").resolve()
 
 
 def _project_path() -> Path:
@@ -77,8 +100,95 @@ def sanitize_tts_config(input_config: dict[str, Any] | None) -> dict[str, Any]:
     return result
 
 
-def validate_tts_config(config: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_slashes(value: str) -> str:
+    return value.replace("\\", "/").strip()
+
+
+def _strip_audio_dir_prefix(value: str) -> str:
+    normalized = _normalize_slashes(value)
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    lower = normalized.lower()
+    for prefix in ("voice_sourse/", "vi/"):
+        if lower.startswith(prefix):
+            return normalized[len(prefix):]
+    return normalized
+
+
+def _legacy_alias(path: Path) -> Path | None:
+    try:
+        relative = path.resolve(strict=False).relative_to(get_legacy_voice_source_dir())
+    except ValueError:
+        return None
+    return (get_voice_source_dir() / relative).resolve(strict=False)
+
+
+def resolve_audio_path(value: str | os.PathLike[str] | None) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        resolved = path.resolve(strict=False)
+        if resolved.exists():
+            return resolved
+        alias = _legacy_alias(resolved)
+        if alias is not None and alias.exists():
+            return alias
+        return resolved
+
+    relative = Path(_strip_audio_dir_prefix(raw))
+    candidate = (get_voice_source_dir() / relative).resolve(strict=False)
+    if candidate.exists():
+        return candidate
+
+    legacy_candidate = (get_legacy_voice_source_dir() / relative).resolve(strict=False)
+    alias = _legacy_alias(legacy_candidate)
+    if alias is not None and alias.exists():
+        return alias
+
+    return candidate
+
+
+def to_relative_audio_path(value: str | os.PathLike[str] | None) -> str | None:
+    resolved = resolve_audio_path(value)
+    if resolved is None:
+        return None
+    try:
+        relative = os.path.relpath(resolved, get_voice_source_dir())
+    except ValueError:
+        return _normalize_slashes(str(resolved))
+    return _normalize_slashes(relative)
+
+
+def normalize_audio_path_fields(data: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(data or {})
+    for field in AUDIO_PATH_FIELDS:
+        raw = str(payload.get(field) or "").strip()
+        if not raw:
+            continue
+        relative = to_relative_audio_path(raw)
+        if relative:
+            payload[field] = relative
+    return payload
+
+
+def normalize_tts_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    return normalize_audio_path_fields(sanitize_tts_config(config))
+
+
+def resolve_tts_config_paths(config: dict[str, Any] | None) -> dict[str, Any]:
     cleaned = sanitize_tts_config(config)
+    for field in AUDIO_PATH_FIELDS:
+        resolved = resolve_audio_path(cleaned.get(field))
+        if resolved is not None:
+            cleaned[field] = str(resolved)
+    return cleaned
+
+
+def validate_tts_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned = normalize_tts_config(config)
     issues: list[str] = []
 
     prompt_audio = str(cleaned.get("prompt_audio_path") or "").strip()
@@ -88,19 +198,18 @@ def validate_tts_config(config: dict[str, Any] | None) -> dict[str, Any]:
     if prompt_text and not prompt_audio:
         issues.append("prompt_text 不能单独填写，需同时提供 prompt_audio_path。")
 
-    for field in ("reference_audio_path", "prompt_audio_path"):
+    for field in AUDIO_PATH_FIELDS:
         raw = str(cleaned.get(field) or "").strip()
         if not raw:
             continue
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            issues.append(f"{field} 必须是本机绝对路径：{raw}")
+        path = resolve_audio_path(raw)
+        if path is None:
             continue
         if not path.exists():
-            issues.append(f"{field} 不存在：{path}")
+            issues.append(f"{field} 不存在：{raw} -> {path}")
             continue
         if not path.is_file():
-            issues.append(f"{field} 不是文件：{path}")
+            issues.append(f"{field} 不是文件：{raw} -> {path}")
 
     if issues:
         message = "；".join(issues)
@@ -121,7 +230,7 @@ def _record_from_dict(raw: dict[str, Any]) -> TtsPresetRecord:
     return TtsPresetRecord(
         id=str(raw.get("id") or uuid4()),
         name=str(raw.get("name") or "未命名预设").strip() or "未命名预设",
-        config=sanitize_tts_config(raw.get("config") if isinstance(raw.get("config"), dict) else {}),
+        config=normalize_tts_config(raw.get("config") if isinstance(raw.get("config"), dict) else {}),
         created_at=str(raw.get("createdAt") or raw.get("created_at") or _utc_now()),
         updated_at=str(raw.get("updatedAt") or raw.get("updated_at") or _utc_now()),
     )
@@ -164,7 +273,7 @@ def save_preset_document(document: TtsPresetDocument) -> None:
             {
                 "id": preset.id,
                 "name": preset.name,
-                "config": preset.config,
+                "config": normalize_tts_config(preset.config),
                 "createdAt": preset.created_at,
                 "updatedAt": preset.updated_at,
             }
@@ -252,7 +361,7 @@ def export_preset_document(scope: PresetScope) -> dict[str, Any]:
             {
                 "id": preset.id,
                 "name": preset.name,
-                "config": preset.config,
+                "config": normalize_tts_config(preset.config),
                 "createdAt": preset.created_at,
                 "updatedAt": preset.updated_at,
                 "isDefault": preset.id == doc.default_preset_id,
@@ -297,3 +406,29 @@ def import_preset_document(scope: PresetScope, payload: dict[str, Any], *, repla
 
     save_preset_document(doc)
     return doc
+
+
+__all__ = [
+    "AUDIO_PATH_FIELDS",
+    "CONFIG_KEYS",
+    "PresetScope",
+    "TtsPresetDocument",
+    "TtsPresetRecord",
+    "create_preset",
+    "delete_preset",
+    "export_preset_document",
+    "get_audio_path_root",
+    "get_preset_file_path",
+    "get_voice_source_dir",
+    "import_preset_document",
+    "load_preset_document",
+    "normalize_tts_config",
+    "normalize_audio_path_fields",
+    "resolve_audio_path",
+    "resolve_tts_config_paths",
+    "sanitize_tts_config",
+    "set_default_preset",
+    "to_relative_audio_path",
+    "update_preset",
+    "validate_tts_config",
+]

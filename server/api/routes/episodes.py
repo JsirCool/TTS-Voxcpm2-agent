@@ -51,10 +51,21 @@ from server.core.export_bundle import (
     write_export_bundle_to_directory,
 )
 from server.api.deps import get_prefect_client, get_session, get_storage
-from server.core.tts_presets import validate_tts_config
+from server.core.tts_presets import normalize_audio_path_fields, normalize_tts_config, validate_tts_config
 
 router = APIRouter(tags=["episodes"])
 CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
+
+
+def _take_to_view(take: Any) -> TakeView:
+    return TakeView(
+        id=take.id,
+        chunk_id=take.chunk_id,
+        audio_uri=take.audio_uri,
+        duration_s=take.duration_s,
+        params=normalize_audio_path_fields(getattr(take, "params", {}) or {}),
+        created_at=take.created_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +336,7 @@ async def get_episode(
             "char_count": c.char_count,
             "last_edited_at": c.last_edited_at,
             "extra_metadata": c.extra_metadata,
-            "takes": [TakeView.model_validate(t) for t in takes],
+            "takes": [_take_to_view(t) for t in takes],
             "stage_runs": [StageRunView.model_validate(sr) for sr in stage_runs],
         }
         ve = verify_map.get(c.id)
@@ -341,7 +352,7 @@ async def get_episode(
         "description": ep.description,
         "status": ep.status,
         "script_uri": ep.script_uri,
-        "config": ep.config,
+        "config": normalize_tts_config(ep.config or {}),
         "locked": ep.locked,
         "created_at": ep.created_at,
         "updated_at": ep.updated_at,
@@ -371,7 +382,7 @@ async def get_config(
     ep = await repo.get(episode_id)
     if ep is None:
         raise DomainError("not_found", f"episode '{episode_id}' not found")
-    return ConfigResponse(config=ep.config or {})
+    return ConfigResponse(config=normalize_tts_config(ep.config or {}))
 
 
 @router.put("/episodes/{episode_id}/config", response_model=ConfigResponse)
@@ -1155,7 +1166,7 @@ async def duplicate_episode(
         title=original.title,
         description=original.description,
         script_uri=script_uri,
-        config=original.config or {},
+        config=normalize_tts_config(original.config or {}),
     )
     ep = await repo.create(payload)
 
