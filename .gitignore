@@ -1,30 +1,54 @@
 .venv/
+.venv-server/
 .work/
-# 排除真实 episode script,保留 demo fixture
+
+# Keep real episode scripts local; retain demo fixtures only.
 /episodes/*.json
 !/episodes/script-demo-*.json
-node_modules/
-*.wav
-*.mp3
+
+# Local environment
 .env
-test/ab-param-test/
-_archive/
-prototype*.html
+docker/.env
+
+# Python
 __pycache__/
 *.pyc
 *.egg-info/
-.DS_Store
-.idea/
-.harness/normalize-patches.json
-.harness/tts-known-issues.json
-.claude/
-.venv-server/
-docker/.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+web/.next/
+web/.turbo/
+*.tsbuildinfo
+
+# Generated media / logs
+*.wav
+*.mp3
+*.log
+.logs/
+logs/
+storage-mirror/
+.harness/
+
+# Test outputs
+coverage/
 test-results/
 web/test-results/
 web/playwright-report/
-\ /
-.harness/
 web/e2e/screenshots/
+
+# Local tooling / editor
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Misc local artifacts
+test/ab-param-test/
+_archive/
+prototype*.html
 docs/_archive/
 docs/worklogs/
