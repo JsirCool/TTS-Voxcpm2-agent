@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
+import os
+import shutil
 from dataclasses import dataclass
 from datetime import timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from minio import Minio
 from minio.error import S3Error
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +92,7 @@ class MinIOStorage:
         bucket: str,
         *,
         secure: bool = False,
+        mirror_dir: str | Path | None = None,
     ) -> None:
         self._client = Minio(
             endpoint,
@@ -95,6 +102,90 @@ class MinIOStorage:
         )
         self._bucket = bucket
         self._bucket_ready = False
+        self._mirror_root = self._resolve_mirror_root(mirror_dir)
+
+    @staticmethod
+    def _resolve_mirror_root(mirror_dir: str | Path | None) -> Path:
+        if mirror_dir is not None:
+            return Path(mirror_dir).expanduser().resolve()
+        raw = os.environ.get("HARNESS_STORAGE_MIRROR_DIR")
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return (Path(__file__).resolve().parents[2] / "storage-mirror").resolve()
+
+    @property
+    def mirror_root(self) -> Path:
+        return self._mirror_root / self._bucket
+
+    def _mirror_parts(self, key: str) -> list[str]:
+        normalized = key.strip().strip("/")
+        if not normalized:
+            return []
+        return [quote(part, safe="._-() ") for part in PurePosixPath(normalized).parts if part not in (".", "")]
+
+    def mirror_path(self, key: str) -> Path:
+        path = self.mirror_root
+        for part in self._mirror_parts(key):
+            path = path / part
+        return path.resolve()
+
+    def _write_mirror_bytes_sync(self, key: str, data: bytes) -> None:
+        path = self.mirror_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def _copy_file_to_mirror_sync(self, key: str, source: Path) -> None:
+        path = self.mirror_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, path)
+
+    def _delete_mirror_key_sync(self, key: str) -> None:
+        path = self.mirror_path(key)
+        if path.exists():
+            path.unlink()
+        self._prune_empty_parents(path.parent)
+
+    def _delete_mirror_prefix_sync(self, prefix: str) -> None:
+        prefix_path = self.mirror_path(prefix)
+        if prefix_path.is_file():
+            prefix_path.unlink()
+        elif prefix_path.exists():
+            shutil.rmtree(prefix_path, ignore_errors=True)
+        self._prune_empty_parents(prefix_path.parent)
+
+    def _prune_empty_parents(self, start: Path) -> None:
+        bucket_root = self.mirror_root
+        current = start
+        while current != bucket_root and current.exists():
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+
+    async def _mirror_bytes(self, key: str, data: bytes) -> None:
+        try:
+            await asyncio.to_thread(self._write_mirror_bytes_sync, key, data)
+        except Exception:  # pragma: no cover - mirror is best-effort
+            log.exception("failed to mirror MinIO object %s to %s", key, self.mirror_path(key))
+
+    async def _mirror_file(self, key: str, path: Path) -> None:
+        try:
+            await asyncio.to_thread(self._copy_file_to_mirror_sync, key, path)
+        except Exception:  # pragma: no cover - mirror is best-effort
+            log.exception("failed to mirror local file %s to %s", path, self.mirror_path(key))
+
+    async def _delete_mirror_key(self, key: str) -> None:
+        try:
+            await asyncio.to_thread(self._delete_mirror_key_sync, key)
+        except Exception:  # pragma: no cover - mirror is best-effort
+            log.exception("failed to delete mirrored MinIO object %s", key)
+
+    async def _delete_mirror_prefix(self, prefix: str) -> None:
+        try:
+            await asyncio.to_thread(self._delete_mirror_prefix_sync, prefix)
+        except Exception:  # pragma: no cover - mirror is best-effort
+            log.exception("failed to delete mirrored MinIO prefix %s", prefix)
 
     # --- bucket lifecycle ------------------------------------------------
 
@@ -136,6 +227,7 @@ class MinIOStorage:
             )
 
         await asyncio.to_thread(_put)
+        await self._mirror_bytes(key, data)
         return self.s3_uri(key)
 
     async def upload_file(self, key: str, path: Path) -> str:
@@ -146,6 +238,7 @@ class MinIOStorage:
             self._client.fput_object(self._bucket, key, str(p))
 
         await asyncio.to_thread(_fput)
+        await self._mirror_file(key, p)
         return self.s3_uri(key)
 
     # --- reads -----------------------------------------------------------
@@ -198,6 +291,7 @@ class MinIOStorage:
             self._client.remove_object(self._bucket, key)
 
         await asyncio.to_thread(_del)
+        await self._delete_mirror_key(key)
 
     async def get_bucket_size_bytes(self) -> int:
         """Return total size of all objects in the bucket (bytes)."""
@@ -221,7 +315,24 @@ class MinIOStorage:
                 self._client.remove_object(self._bucket, obj.object_name)
             return len(objects)
 
-        return await asyncio.to_thread(_del_prefix)
+        deleted = await asyncio.to_thread(_del_prefix)
+        await self._delete_mirror_prefix(prefix)
+        return deleted
+
+    async def sync_prefix_to_mirror(self, prefix: str = "") -> int:
+        """Backfill existing bucket objects into the local mirror directory."""
+        await self.ensure_bucket()
+
+        def _sync() -> int:
+            count = 0
+            for obj in self._client.list_objects(self._bucket, prefix=prefix, recursive=True):
+                path = self.mirror_path(obj.object_name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._client.fget_object(self._bucket, obj.object_name, str(path))
+                count += 1
+            return count
+
+        return await asyncio.to_thread(_sync)
 
 
 __all__ = [

@@ -15,6 +15,7 @@ async def test_upload_bytes_and_download(minio_client):
     key = "episodes/ep1/script.json"
     uri = await minio_client.upload_bytes(key, b'{"hello": 1}', content_type="application/json")
     assert uri == f"s3://{minio_client.bucket}/{key}"
+    assert minio_client.mirror_path(key).read_bytes() == b'{"hello": 1}'
 
     data = await minio_client.download_bytes(key)
     assert data == b'{"hello": 1}'
@@ -27,6 +28,7 @@ async def test_upload_file_roundtrip(tmp_path: Path, minio_client):
     key = "episodes/ep1/chunks/c1/takes/t1.wav"
     uri = await minio_client.upload_file(key, src)
     assert key in uri
+    assert minio_client.mirror_path(key).read_bytes() == b"RIFFxxxxWAVE"
     data = await minio_client.download_bytes(key)
     assert data == b"RIFFxxxxWAVE"
 
@@ -53,8 +55,21 @@ async def test_delete(minio_client):
     key = "episodes/ep1/chunks/c1/transcript.json"
     await minio_client.upload_bytes(key, b"{}")
     assert await minio_client.exists(key)
+    assert minio_client.mirror_path(key).exists()
     await minio_client.delete(key)
     assert (await minio_client.exists(key)) is False
+    assert minio_client.mirror_path(key).exists() is False
+
+
+@requires_docker
+async def test_sync_prefix_to_mirror(minio_client):
+    key = "episodes/ep-sync/chunks/c1/takes/t1.wav"
+    await minio_client.upload_bytes(key, b"mirror-me")
+    minio_client.mirror_path(key).unlink()
+
+    synced = await minio_client.sync_prefix_to_mirror("episodes/ep-sync")
+    assert synced >= 1
+    assert minio_client.mirror_path(key).read_bytes() == b"mirror-me"
 
 
 def test_path_helpers_match_adr():

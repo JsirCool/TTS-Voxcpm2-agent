@@ -26,6 +26,7 @@ import shutil
 import socket
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from tempfile import TemporaryDirectory
 
 import pytest
 import pytest_asyncio
@@ -172,10 +173,12 @@ def minio_settings(minio_container):  # type: ignore[valid-type]
 def minio_client(minio_settings):
     from server.core.storage import MinIOStorage
 
-    return MinIOStorage(
-        endpoint=minio_settings.endpoint,
-        access_key=minio_settings.access_key,
-        secret_key=minio_settings.secret_key,
-        bucket=minio_settings.bucket,
-        secure=minio_settings.secure,
-    )
+    with TemporaryDirectory() as mirror_dir:
+        yield MinIOStorage(
+            endpoint=minio_settings.endpoint,
+            access_key=minio_settings.access_key,
+            secret_key=minio_settings.secret_key,
+            bucket=minio_settings.bucket,
+            secure=minio_settings.secure,
+            mirror_dir=mirror_dir,
+        )
