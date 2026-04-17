@@ -1,39 +1,169 @@
-# Windows Local Start
+# Windows Local Start / Windows 本地启动
 
-## One-click start
+## 1. 适用场景 / What This Guide Is For
+
+这份文档用于 Windows 本地开发环境，帮助你快速启动整套 `tts-agent-harness`。
+
+This guide is for local Windows development and explains how to start the full `tts-agent-harness` stack.
+
+## 2. 启动前必须准备 / Required Before Startup
+
+请先安装：
+
+Install these first:
+
+- Docker Desktop
+- Node.js `18+`
+- `pnpm`
+- Python `3.12`
+- `ffmpeg` and `ffprobe`
+
+另外还需要准备这些本地资产：
+
+You also need these local assets:
+
+- a local Python runtime for the harness services
+- a local VoxCPM model directory
+- a local Hugging Face / WhisperX cache
+- optional local reference audio files under `voice_sourse`
+
+## 3. 先改这两个文件 / Edit These Two Files First
+
+首次启动前，请先检查：
+
+Before your first run, check:
+
+- [`.env.dev`](/E:/VC/tts-agent-harness/.env.dev)
+- [`scripts/windows/_env.bat`](/E:/VC/tts-agent-harness/scripts/windows/_env.bat)
+
+通常你需要确认这几个值：
+
+Usually you need to confirm these values:
+
+- `VENV_PY`
+- `VOXCPM_MODEL_PATH`
+- `HF_HOME`
+- `VOXCPM_URL`
+- `WHISPERX_URL`
+
+如果你的机器不用代理，请清空 `.env` 里的：
+
+If your machine does not use a proxy, clear these values in `.env`:
+
+- `HTTP_PROXY`
+- `HTTPS_PROXY`
+
+## 4. 创建 `.env` / Create `.env`
+
+如果仓库根目录还没有 `.env`，复制模板：
+
+If the repo root does not yet contain `.env`, copy the template:
+
+```powershell
+copy .env.dev .env
+```
+
+## 5. 安装依赖 / Install Dependencies
+
+最简单的方式，是准备一个统一的 Python 3.12 环境，并让启动脚本都指向同一个 `python.exe`。
+
+The simplest setup is to prepare one shared Python 3.12 environment and let all launcher scripts use the same `python.exe`.
+
+示例：
+
+Example:
+
+```powershell
+cd E:\VC\tts-agent-harness
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e .\server[dev]
+.venv\Scripts\python.exe -m pip install -e .\voxcpm-svc
+.venv\Scripts\python.exe -m pip install -e .\whisperx-svc[dev]
+pnpm --dir .\web install
+```
+
+然后把：
+
+Then point:
+
+- [`scripts/windows/_env.bat`](/E:/VC/tts-agent-harness/scripts/windows/_env.bat)
+
+里的 `VENV_PY` 改成：
+
+Set `VENV_PY` to:
+
+```text
+E:\VC\tts-agent-harness\.venv\Scripts\python.exe
+```
+
+如果你的 VoxCPM / WhisperX 依赖特殊 CUDA / Torch 组合，也可以自己拆成多个环境，但那时就需要自己修改启动脚本。
+
+If your VoxCPM / WhisperX setup depends on a special CUDA / Torch combination, you can split them into multiple environments, but then you must customize the launcher scripts yourself.
+
+## 6. 一键启动 / One-Click Start
+
+直接双击：
 
 Double-click:
 
-- `start-local-stack.bat`
+- [start-local-stack.bat](/E:/VC/tts-agent-harness/start-local-stack.bat)
 
-What it does:
+它会自动执行：
 
-1. Starts Docker infra: Postgres + MinIO
-2. Runs Alembic migrations
-3. Checks Web dependencies
-4. Opens 4 command windows:
-   - `VoxCPM`
-   - `WhisperX`
-   - `API`
-   - `Web`
-5. Opens the browser to `http://localhost:3010`
+It will automatically:
 
-## One-click stop
+1. start Docker infra: Postgres + MinIO
+2. run Alembic migrations
+3. check or install Web dependencies
+4. open 4 command windows:
+   - VoxCPM
+   - WhisperX
+   - API
+   - Web
+5. open the browser at `http://localhost:3010`
+
+## 7. 一键停止 / One-Click Stop
+
+双击：
 
 Double-click:
 
-- `stop-local-stack.bat`
+- [stop-local-stack.bat](/E:/VC/tts-agent-harness/stop-local-stack.bat)
 
-It kills local processes on ports:
+它会停止：
 
-- `3010`
-- `7860`
-- `8100`
-- `8877`
+It will stop:
 
-and then stops Docker infra.
+- local processes on ports `3010`, `7860`, `8100`, `8877`
+- Docker infra for this project
 
-## URLs
+## 8. 调试模式启动 / Debug Startup Mode
+
+如果你双击后觉得“窗口一闪而过”，并不一定是脚本坏了。主启动脚本本来就会在拉起服务窗口后结束。
+
+If the window closes immediately after double-clicking, that does not always mean the script failed. The launcher is designed to exit after it starts the service windows.
+
+如果你想看到它卡在哪一步，请运行：
+
+If you want to keep the launcher window open and see where it stops, run:
+
+```powershell
+cmd /k E:\VC\tts-agent-harness\start-local-stack.bat
+```
+
+## 9. 单独启动某个服务 / Start a Single Service
+
+你也可以只启动某个服务：
+
+You can also start a single service:
+
+- [scripts/windows/run-voxcpm-svc.bat](/E:/VC/tts-agent-harness/scripts/windows/run-voxcpm-svc.bat)
+- [scripts/windows/run-whisperx-svc.bat](/E:/VC/tts-agent-harness/scripts/windows/run-whisperx-svc.bat)
+- [scripts/windows/run-api.bat](/E:/VC/tts-agent-harness/scripts/windows/run-api.bat)
+- [scripts/windows/run-web.bat](/E:/VC/tts-agent-harness/scripts/windows/run-web.bat)
+
+## 10. 常用地址 / Common URLs
 
 - Web: `http://localhost:3010`
 - API: `http://localhost:8100`
@@ -42,28 +172,96 @@ and then stops Docker infra.
 - WhisperX health: `http://127.0.0.1:7860/healthz`
 - MinIO console: `http://localhost:59001`
 
-## Start a single service manually
+## 11. 参考音频目录 / Reference Audio Folder
 
-You can also double-click any one of these:
+如果你要使用可控克隆或极致克隆，请把参考音频放到 `voice_sourse` 目录。
 
-- `scripts\windows\run-voxcpm-svc.bat`
-- `scripts\windows\run-whisperx-svc.bat`
-- `scripts\windows\run-api.bat`
-- `scripts\windows\run-web.bat`
+If you want to use controllable cloning or ultimate cloning, put your reference audio files in the `voice_sourse` directory.
 
-## First-time checks
+默认目录通常是仓库的上一级：
 
-If your paths are different, edit:
+By default, this directory is usually placed one level above the repo:
 
-- `scripts\windows\_env.bat`
+```text
+E:\VC\tts-agent-harness
+E:\VC\voice_sourse
+```
 
-The most important values are:
+配置里填写相对路径即可，例如：
 
-- `VENV_PY`
+Use relative paths in the config, for example:
+
+```text
+111.m4a
+speakers\host-a.wav
+```
+
+## 12. 首次启动注意事项 / First-Run Notes
+
+- WhisperX 第一次加载模型时，可能需要 `10-60` 秒。
+- Web 依赖安装当前默认使用 `pnpm`。
+- 如果 Web 没打开，先确认 `http://localhost:3010` 是否能访问。
+- 如果端口被占用，先运行停止脚本再重试。
+
+- WhisperX may take `10-60` seconds to load on first run.
+- Web dependencies are currently installed with `pnpm`.
+- If the Web app does not open, first check whether `http://localhost:3010` is reachable.
+- If a port is already in use, run the stop script and try again.
+
+## 13. 常见问题 / Common Problems
+
+### 找不到 Python / Missing Python
+
+请修改：
+
+Edit:
+
+- [`scripts/windows/_env.bat`](/E:/VC/tts-agent-harness/scripts/windows/_env.bat)
+
+并确认：
+
+And verify:
+
+- `VENV_PY` points to your local `python.exe`
+
+### VoxCPM 启动了但模型没加载 / VoxCPM starts but the model is not loaded
+
+检查：
+
+Check:
+
 - `VOXCPM_MODEL_PATH`
-- `HF_HOME`
+- GPU / CUDA environment
+- `http://127.0.0.1:8877/healthz`
 
-## Notes
+### WhisperX 返回 503 / WhisperX returns 503
 
-- WhisperX may take `10-60` seconds to load on first start.
-- The Web dependency install uses `pnpm` and the Yarn registry because this machine had repeated `npm`/`npmjs` network resets.
+通常表示服务进程在，但模型还没加载完成。
+
+This usually means the service process is up, but the model has not finished loading yet.
+
+先看：
+
+Check:
+
+- `http://127.0.0.1:7860/healthz`
+- `http://127.0.0.1:7860/readyz`
+
+### 页面打不开 / Web page does not open
+
+先检查：
+
+Check:
+
+- whether port `3010` is listening
+- whether `run-web.bat` is still running
+- whether `web/node_modules` exists
+
+必要时先停止再重启：
+
+If needed, stop everything first and start again:
+
+```powershell
+cmd /c E:\VC\tts-agent-harness\stop-local-stack.bat
+cmd /k E:\VC\tts-agent-harness\start-local-stack.bat
+```
