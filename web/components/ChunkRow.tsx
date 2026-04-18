@@ -166,7 +166,14 @@ export const ChunkRow = memo(function ChunkRow({
   const { isPlaying } = player;
 
   const [verifyExpanded, setVerifyExpanded] = useState(false);
+  const [attemptsExpanded, setAttemptsExpanded] = useState(false);
   const toggleVerify = useCallback(() => setVerifyExpanded((value) => !value), []);
+  const visibleAttempts = attemptsExpanded
+    ? (chunk.attemptHistory ?? []).map((attempt, index) => ({ attempt, index }))
+    : chunk.attemptHistory && chunk.attemptHistory.length > 0
+      ? [{ attempt: chunk.attemptHistory[chunk.attemptHistory.length - 1], index: chunk.attemptHistory.length - 1 }]
+      : [];
+  const hiddenAttemptCount = Math.max(0, (chunk.attemptHistory?.length ?? 0) - visibleAttempts.length);
 
   const hasAudio = chunk.status === "synth_done" || chunk.status === "verified" || chunk.status === "needs_review";
   const canPlay = hasAudio && Boolean(audioUrl) && !isDirty;
@@ -401,8 +408,28 @@ export const ChunkRow = memo(function ChunkRow({
         ) : null}
 
         {chunk.attemptHistory && chunk.attemptHistory.length > 0 ? (
-          <div className="mt-1 border border-neutral-200 dark:border-neutral-700 rounded overflow-hidden">
-            {chunk.attemptHistory.map((attempt, index) => (
+          <div className="mt-1 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700">
+            <div className="flex items-center justify-between gap-2 border-b border-neutral-100 bg-neutral-50 px-2 py-1 text-[10px] text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400">
+              <span className="uppercase tracking-wide">重跑记录 ({chunk.attemptHistory.length})</span>
+              {hiddenAttemptCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setAttemptsExpanded(true)}
+                  className="rounded px-1.5 py-0.5 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+                >
+                  展开 {hiddenAttemptCount} 条旧记录
+                </button>
+              ) : chunk.attemptHistory.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => setAttemptsExpanded(false)}
+                  className="rounded px-1.5 py-0.5 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+                >
+                  收起
+                </button>
+              ) : null}
+            </div>
+            {visibleAttempts.map(({ attempt, index }) => (
               <RetryRow
                 key={`${attempt.attempt}-${attempt.timestamp}`}
                 attempt={attempt}

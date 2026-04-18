@@ -116,12 +116,11 @@ It will automatically:
 1. start Docker infra: Postgres + MinIO
 2. run Alembic migrations
 3. check or install Web dependencies
-4. open 4 command windows:
-   - VoxCPM
-   - WhisperX
-   - API
-   - Web
+4. start VoxCPM / WhisperX / API / Web in the background
 5. open the browser at `http://localhost:3010`
+
+榛樿鐨勪竴閿惎鍔ㄧ幇鍦ㄦ槸鍚庡彴闈欓粯妯″紡锛屼笉鍐嶅脊鍑?4 涓湇鍔＄獥鍙ｃ€?
+The default one-click launcher now starts services silently in the background, without opening four terminal windows.
 
 ## 7. 一键停止 / One-Click Stop
 
@@ -150,6 +149,13 @@ If you want to keep the launcher window open and see where it stops, run:
 
 ```powershell
 cmd /k E:\VC\tts-agent-harness\start-local-stack.bat
+```
+
+濡傛灉浣犻渶瑕佺湅鍒版瘡涓湇鍔＄殑鍙鏃ュ織绐楀彛锛岃鐢細
+If you want visible service windows for troubleshooting, use:
+
+```powershell
+cmd /k E:\VC\tts-agent-harness\start-local-stack-debug.bat
 ```
 
 ## 9. 单独启动某个服务 / Start a Single Service

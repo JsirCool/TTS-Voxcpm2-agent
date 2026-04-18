@@ -23,8 +23,9 @@ export function stripControlMarkers(text: string | null | undefined): string {
 /** 得到字幕显示文本:优先 subtitleText,否则 strip 后的 text。 */
 export function getDisplaySubtitle(c: {
   text: string;
+  textNormalized: string;
   subtitleText: string | null;
 }): string {
   if (c.subtitleText != null) return stripControlMarkers(c.subtitleText);
-  return stripControlMarkers(c.text);
+  return stripControlMarkers(c.textNormalized || c.text);
 }

@@ -11,7 +11,8 @@ Lifecycle
 2. Write a ``stage_started`` event (fires pg_notify → SSE).
 3. Download ``transcript.json`` from MinIO.
 4. Parse / validate via :class:`WhisperXTranscript`.
-5. Pick the subtitle source text (``chunk.subtitle_text`` or ``chunk.text``).
+5. Pick the subtitle source text (``chunk.subtitle_text`` or
+   ``chunk.text_normalized`` or ``chunk.text``).
 6. Call :func:`compose_srt` to produce the SRT document deterministically.
 7. Upload to MinIO under ``chunk_subtitle_key``.
 8. In a single transaction: flip ``chunk.status`` → ``p5_done`` and write
@@ -161,7 +162,11 @@ async def run_p5_subtitles(chunk_id: str) -> P5Result:
                 f"take {take.id} has non-positive duration {total_duration}",
             )
         episode_id = chunk.episode_id
-        source_text = (chunk.subtitle_text or "").strip() or (chunk.text or "")
+        source_text = (
+            (chunk.subtitle_text or "").strip()
+            or (chunk.text_normalized or "").strip()
+            or (chunk.text or "")
+        )
 
         # 2. stage_started event.
         started_at = datetime.now(timezone.utc)

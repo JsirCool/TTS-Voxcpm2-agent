@@ -260,6 +260,30 @@ class TestRunP5SubtitlesHappyPath:
         assert "字幕覆盖文本一。" in srt
         assert "主文本" not in srt  # the non-subtitle field is ignored
 
+    async def test_falls_back_to_text_normalized_before_original_text(self, session_factory, storage):
+        await _seed_chunk(
+            session_factory,
+            chunk_text="original chinese line",
+            duration_s=2.0,
+        )
+        async with session_factory() as session:
+            chunk = await ChunkRepo(session).get(CHUNK_ID)
+            assert chunk is not None
+            chunk.text_normalized = "hello everyone"
+            chunk.char_count = len(chunk.text_normalized)
+            await session.commit()
+        await _put_transcript(
+            storage,
+            [{"word": "hello", "start": 0.0, "end": 1.0, "score": 1.0}],
+        )
+
+        result = await run_p5_subtitles(CHUNK_ID)
+
+        assert result.line_count == 1
+        srt = storage.objects[chunk_subtitle_key(EP_ID, CHUNK_ID)].decode("utf-8")
+        assert "hello everyone" in srt
+        assert "original chinese line" not in srt
+
     async def test_determinism_same_input_same_srt(self, session_factory, storage):
         await _seed_chunk(session_factory, chunk_text="一。二。三。", duration_s=3.0)
         await _put_transcript(

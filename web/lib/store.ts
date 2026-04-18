@@ -9,6 +9,7 @@
  */
 
 import { create } from "zustand";
+import { toast } from "sonner";
 import type { ChunkEdit, EditBatch, StageName } from "./types";
 import * as api from "./hooks";
 import { playExclusiveAudio, stopExclusiveAudio } from "./audio-session";
@@ -59,6 +60,37 @@ interface HarnessState {
   updateConfig: (epId: string, config: Record<string, unknown>) => Promise<void>;
   finalizeTake: (epId: string, cid: string, takeId: string) => Promise<void>;
   previewTake: (audioUri: string) => void;
+}
+
+function describeMediaError(error: MediaError | null): string {
+  switch (error?.code) {
+    case MediaError.MEDIA_ERR_ABORTED:
+      return "播放被浏览器中断了。";
+    case MediaError.MEDIA_ERR_NETWORK:
+      return "音频请求失败，请检查 API 和网络。";
+    case MediaError.MEDIA_ERR_DECODE:
+      return "浏览器没能解码这条音频。";
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return "浏览器不支持当前音频地址或格式。";
+    default:
+      return "浏览器没有成功播放这条音频。";
+  }
+}
+
+function isBenignPlaybackInterruption(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return error instanceof DOMException && error.name === "AbortError"
+    || /interrupted by a call to pause\(\)/i.test(message)
+    || /interrupted by a new load request/i.test(message)
+    || /play\(\) request was interrupted/i.test(message);
+}
+
+function notifyPlaybackFailure(error?: unknown, mediaError?: MediaError | null) {
+  if (isBenignPlaybackInterruption(error)) return;
+  const description = error instanceof Error
+    ? error.message
+    : describeMediaError(mediaError ?? null);
+  toast.error("音频播放失败", { description });
 }
 
 export const useHarnessStore = create<HarnessState>((set, get) => ({
@@ -198,9 +230,16 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     stopExclusiveAudio();
     set({ playingChunkId: null, continuousPlay: false });
     const audio = new Audio(api.getAudioUrl(audioUri));
+    audio.preload = "metadata";
+    audio.muted = false;
+    audio.volume = 1;
+    audio.addEventListener("error", () => {
+      notifyPlaybackFailure(undefined, audio.error);
+    }, { once: true });
     audio.addEventListener("ended", () => stopExclusiveAudio(audio), { once: true });
-    playExclusiveAudio(audio).catch(() => {
+    playExclusiveAudio(audio).catch((error) => {
       stopExclusiveAudio(audio);
+      notifyPlaybackFailure(error, audio.error);
     });
   },
 }));
