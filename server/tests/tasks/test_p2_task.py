@@ -261,7 +261,8 @@ async def test_happy_path_transitions_chunk_and_writes_take(
     assert result.audio_uri.startswith("s3://tts-harness/")
     assert result.audio_uri.endswith(".wav")
     assert result.duration_s > 0
-    assert result.params["model"] == "voxcpm2"
+    assert result.params["tts_mode"] == "voice_design"
+    assert result.params["cfg_value"] == 2.0
 
     # Chunk state advanced.
     chunk = await _load_chunk(seeded)
@@ -275,7 +276,9 @@ async def test_happy_path_transitions_chunk_and_writes_take(
     assert take.id == result.take_id
     assert take.chunk_id == CHUNK_ID
     assert take.audio_uri == result.audio_uri
-    assert take.params["temperature"] == 0.7
+    assert take.params["tts_mode"] == "voice_design"
+    assert "temperature" not in take.params
+    assert "reference_id" not in take.params
 
     # MinIO received the bytes at the canonical key.
     expected_key = chunk_take_key(EP_ID, CHUNK_ID, result.take_id)
@@ -384,9 +387,10 @@ async def test_custom_params_dict_is_merged_into_call(seeded, fake_voxcpm):
     _, used_params = fake_voxcpm.calls[-1]
     assert used_params.temperature == 0.2
     assert used_params.reference_id == "voice-x"
-    # Result params reflect the merged view.
-    assert result.params["temperature"] == 0.2
-    assert result.params["reference_id"] == "voice-x"
+    # Stored/result params are trimmed to the active VoxCPM runtime surface.
+    assert result.params["tts_mode"] == "voice_design"
+    assert "temperature" not in result.params
+    assert "reference_id" not in result.params
 
 
 async def test_ultimate_cloning_strips_control_prompt_and_chunk_override(
@@ -412,7 +416,36 @@ async def test_ultimate_cloning_strips_control_prompt_and_chunk_override(
     assert used_params.prompt_audio_path == "111.m4a"
     assert used_params.prompt_text == "hello everyone"
     assert used_params.control_prompt is None
-    assert result.params["control_prompt"] is None
+    assert result.params["tts_mode"] == "ultimate_cloning"
+    assert result.params["prompt_audio_path"] == "111.m4a"
+    assert result.params["prompt_text"] == "hello everyone"
+    assert "control_prompt" not in result.params
+
+
+async def test_explicit_episode_config_does_not_inherit_voice_profile_from_env(
+    seeded, fake_voxcpm, monkeypatch
+):
+    monkeypatch.setenv("VOXCPM_PROMPT_AUDIO_PATH", "env-prompt.wav")
+    monkeypatch.setenv("VOXCPM_PROMPT_TEXT", "env prompt")
+    monkeypatch.setenv("VOXCPM_CONTROL_PROMPT", "env control")
+
+    result = await run_p2_synth(
+        CHUNK_ID,
+        {
+            "reference_audio_path": "111.m4a",
+            "control_prompt": "episode-specific style",
+        },
+    )
+
+    _, used_params = fake_voxcpm.calls[-1]
+    assert used_params.reference_audio_path == "111.m4a"
+    assert used_params.control_prompt == "episode-specific style"
+    assert used_params.prompt_audio_path is None
+    assert used_params.prompt_text is None
+    assert result.params["tts_mode"] == "controllable_cloning"
+    assert result.params["reference_audio_path"] == "111.m4a"
+    assert result.params["control_prompt"] == "episode-specific style"
+    assert "prompt_audio_path" not in result.params
 
 
 async def test_p2_synth_task_decorator_has_voxcpm_tag_and_retries():

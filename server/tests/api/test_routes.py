@@ -262,6 +262,27 @@ class TestChunkEdit:
         )
         assert resp.status_code == 404
 
+    async def test_edit_chunk_rejects_control_prompt_in_ultimate_cloning(
+        self,
+        seeded_client: AsyncClient,
+    ):
+        global _maker
+        async with _maker() as session:
+            episode = await EpisodeRepo(session).get("ep-test")
+            assert episode is not None
+            episode.config = {
+                "prompt_audio_path": "111.m4a",
+                "prompt_text": "hello everyone",
+            }
+            await session.commit()
+
+        resp = await seeded_client.post(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/edit",
+            params={"control_prompt": "angry female voice"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid_input"
+
 
 class TestChunkRetry:
     async def test_retry_chunk(self, seeded_client: AsyncClient):

@@ -36,8 +36,24 @@ const CONFIG_KEYS = [
   "denoise",
 ] as const;
 
+type TtsMode = "voice_design" | "controllable_cloning" | "ultimate_cloning";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function inferPresetMode(input: Record<string, unknown>): TtsMode {
+  const promptAudioPath = getString(input.prompt_audio_path);
+  const promptText = getString(input.prompt_text);
+  const referenceAudioPath = getString(input.reference_audio_path);
+
+  if (promptAudioPath || promptText) return "ultimate_cloning";
+  if (referenceAudioPath) return "controllable_cloning";
+  return "voice_design";
 }
 
 export function sanitizeTtsConfig(input: Record<string, unknown>): Record<string, unknown> {
@@ -47,6 +63,19 @@ export function sanitizeTtsConfig(input: Record<string, unknown>): Record<string
     if (value === undefined || value === null) continue;
     if (typeof value === "string" && value.trim() === "") continue;
     next[key] = value;
+  }
+  const mode = inferPresetMode(next);
+  if (mode === "ultimate_cloning") {
+    delete next.control_prompt;
+    delete next.reference_audio_path;
+  } else if (mode === "controllable_cloning") {
+    delete next.prompt_audio_path;
+    delete next.prompt_text;
+  } else {
+    delete next.denoise;
+    delete next.reference_audio_path;
+    delete next.prompt_audio_path;
+    delete next.prompt_text;
   }
   return next;
 }

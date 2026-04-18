@@ -161,7 +161,7 @@ export function TtsPresetDialog({ open, onClose, currentConfig, onApplyPreset }:
                 <button
                   type="button"
                   onClick={async () => {
-                    await onApplyPreset(preset.config);
+                    await onApplyPreset(sanitizeTtsConfig(preset.config));
                     toast.success(`已把“${preset.name}”套用到当前 Episode`);
                   }}
                   className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"

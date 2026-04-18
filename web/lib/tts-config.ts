@@ -8,6 +8,14 @@ function getString(value: unknown): string {
 
 export function inferTtsMode(config: Record<string, unknown> | undefined): TtsMode {
   const source = config ?? {};
+  const explicitMode = getString(source.tts_mode);
+  if (
+    explicitMode === "voice_design"
+    || explicitMode === "controllable_cloning"
+    || explicitMode === "ultimate_cloning"
+  ) {
+    return explicitMode;
+  }
   const promptAudioPath = getString(source.prompt_audio_path);
   const promptText = getString(source.prompt_text);
   const referenceAudioPath = getString(source.reference_audio_path);

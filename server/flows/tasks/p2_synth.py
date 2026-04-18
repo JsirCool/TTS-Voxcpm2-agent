@@ -53,6 +53,7 @@ from server.core.voxcpm_client import (
     VoxCPMClient,
     VoxCPMClientError,
     build_params_from_env,
+    serialize_active_params,
     sanitize_params_for_mode,
 )
 from server.core.repositories import ChunkRepo, TakeRepo
@@ -187,6 +188,7 @@ async def run_p2_synth(
         merged.update(params)
         tts_params = FishTTSParams(**merged)
     tts_params = sanitize_params_for_mode(tts_params)
+    active_params = serialize_active_params(tts_params)
 
     # 1. Load chunk + validate.
     async with _session_scope(session_factory) as session:
@@ -211,6 +213,7 @@ async def run_p2_synth(
             else:
                 merged_params.pop("control_prompt", None)
             tts_params = sanitize_params_for_mode(FishTTSParams(**merged_params))
+            active_params = serialize_active_params(tts_params)
 
         if len(text) > TEXT_LENGTH_WARN_THRESHOLD:
             log.warning(
@@ -287,7 +290,7 @@ async def run_p2_synth(
                 chunk_id=chunk_id,
                 audio_uri=audio_uri,
                 duration_s=duration_s,
-                params=tts_params.model_dump(),
+                params=active_params,
             )
         )
         chunk_repo = ChunkRepo(session)
@@ -319,7 +322,7 @@ async def run_p2_synth(
         take_id=take_id,
         audio_uri=audio_uri,
         duration_s=duration_s,
-        params=tts_params.model_dump(),
+        params=active_params,
     )
 
 

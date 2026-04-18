@@ -51,7 +51,12 @@ from server.core.export_bundle import (
     write_export_bundle_to_directory,
 )
 from server.api.deps import get_prefect_client, get_session, get_storage
-from server.core.tts_presets import normalize_audio_path_fields, normalize_tts_config, validate_tts_config
+from server.core.tts_presets import (
+    infer_tts_mode,
+    normalize_audio_path_fields,
+    normalize_tts_config,
+    validate_tts_config,
+)
 
 router = APIRouter(tags=["episodes"])
 CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
@@ -878,6 +883,11 @@ async def edit_chunk(
 
     next_metadata: dict[str, Any] | None = None
     if control_prompt is not None or clear_control_prompt:
+        if control_prompt is not None and infer_tts_mode(ep.config or {}) == "ultimate_cloning":
+            raise DomainError(
+                "invalid_input",
+                "ultimate cloning 模式下不能为 chunk 单独设置 control_prompt",
+            )
         next_metadata = dict(chunk.extra_metadata or {})
         if clear_control_prompt:
             next_metadata.pop(CHUNK_CONTROL_PROMPT_OVERRIDE_KEY, None)

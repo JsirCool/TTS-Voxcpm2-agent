@@ -14,7 +14,12 @@ from typing import Any, AsyncIterator
 import httpx
 
 from .domain import FishTTSParams
-from .tts_presets import apply_tts_mode_rules, infer_tts_mode, resolve_audio_path
+from .tts_presets import (
+    apply_tts_mode_rules,
+    infer_tts_mode,
+    normalize_tts_config,
+    resolve_audio_path,
+)
 
 DEFAULT_VOXCPM_URL = os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
@@ -147,8 +152,53 @@ def sanitize_params_for_mode(params: FishTTSParams) -> FishTTSParams:
     return FishTTSParams(**apply_tts_mode_rules(params.model_dump()))
 
 
-def build_params_from_env(overrides: dict[str, Any] | None = None) -> FishTTSParams:
-    """Construct synthesis params using local VoxCPM-oriented env defaults."""
+def serialize_active_params(params: FishTTSParams) -> dict[str, Any]:
+    """Persist only the active, mode-appropriate params for history/debugging."""
+
+    cleaned = normalize_tts_config(sanitize_params_for_mode(params).model_dump())
+    mode = infer_tts_mode(cleaned)
+    serialized: dict[str, Any] = {
+        "tts_mode": mode,
+        "cfg_value": cleaned.get("cfg_value", params.cfg_value),
+        "inference_timesteps": cleaned.get(
+            "inference_timesteps",
+            params.inference_timesteps,
+        ),
+        "max_len": cleaned.get("max_len", params.max_len),
+        "speed": cleaned.get("speed", params.speed),
+        "normalize": bool(cleaned.get("normalize", params.normalize)),
+    }
+
+    if mode != "voice_design":
+        serialized["denoise"] = bool(cleaned.get("denoise", params.denoise))
+
+    if mode == "voice_design":
+        if control_prompt := cleaned.get("control_prompt"):
+            serialized["control_prompt"] = control_prompt
+    elif mode == "controllable_cloning":
+        if reference_audio_path := cleaned.get("reference_audio_path"):
+            serialized["reference_audio_path"] = reference_audio_path
+        if control_prompt := cleaned.get("control_prompt"):
+            serialized["control_prompt"] = control_prompt
+    else:
+        if prompt_audio_path := cleaned.get("prompt_audio_path"):
+            serialized["prompt_audio_path"] = prompt_audio_path
+        if prompt_text := cleaned.get("prompt_text"):
+            serialized["prompt_text"] = prompt_text
+
+    return serialized
+
+
+def build_params_from_env(
+    overrides: dict[str, Any] | None = None,
+    *,
+    include_voice_profile: bool = False,
+) -> FishTTSParams:
+    """Construct synthesis params from env defaults.
+
+    By default this only reads neutral runtime defaults. Voice-profile fields
+    are opt-in so old env values do not silently leak into a new episode run.
+    """
 
     def _env_flag(name: str, default: bool) -> bool:
         raw = os.environ.get(name)
@@ -182,14 +232,15 @@ def build_params_from_env(overrides: dict[str, Any] | None = None) -> FishTTSPar
         "normalize": _env_flag("VOXCPM_NORMALIZE", False),
         "denoise": _env_flag("VOXCPM_DENOISE", False),
     }
-    if ref := os.environ.get("VOXCPM_REFERENCE_AUDIO_PATH"):
-        base["reference_audio_path"] = ref
-    if prompt_audio := os.environ.get("VOXCPM_PROMPT_AUDIO_PATH"):
-        base["prompt_audio_path"] = prompt_audio
-    if prompt_text := os.environ.get("VOXCPM_PROMPT_TEXT"):
-        base["prompt_text"] = prompt_text
-    if control_prompt := os.environ.get("VOXCPM_CONTROL_PROMPT"):
-        base["control_prompt"] = control_prompt
+    if include_voice_profile:
+        if ref := os.environ.get("VOXCPM_REFERENCE_AUDIO_PATH"):
+            base["reference_audio_path"] = ref
+        if prompt_audio := os.environ.get("VOXCPM_PROMPT_AUDIO_PATH"):
+            base["prompt_audio_path"] = prompt_audio
+        if prompt_text := os.environ.get("VOXCPM_PROMPT_TEXT"):
+            base["prompt_text"] = prompt_text
+        if control_prompt := os.environ.get("VOXCPM_CONTROL_PROMPT"):
+            base["control_prompt"] = control_prompt
     if overrides:
         base.update(overrides)
     return sanitize_params_for_mode(FishTTSParams(**base))
@@ -203,5 +254,6 @@ __all__ = [
     "VoxCPMClientError",
     "VoxCPMServerError",
     "build_params_from_env",
+    "serialize_active_params",
     "sanitize_params_for_mode",
 ]

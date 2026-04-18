@@ -136,6 +136,7 @@ def apply_tts_mode_rules(config: dict[str, Any] | None) -> dict[str, Any]:
         cleaned.pop("prompt_audio_path", None)
         cleaned.pop("prompt_text", None)
     else:
+        cleaned.pop("denoise", None)
         cleaned.pop("reference_audio_path", None)
         cleaned.pop("prompt_audio_path", None)
         cleaned.pop("prompt_text", None)
