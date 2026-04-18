@@ -25,10 +25,16 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from server.core.domain import ChunkInput
+from server.core.domain import ChunkInput, FishTTSParams
 from server.core.bilibili_import import BilibiliImportResult
 from server.core.models import Base, Event
-from server.core.media_processing import MediaProcessResult, MediaToolStatus
+from server.core.media_processing import (
+    MediaProcessResult,
+    MediaToolStatus,
+    SubtitleResolveResult,
+    SubtitleCue,
+    TrialSynthesisResult,
+)
 from server.core.repositories import ChunkRepo, EpisodeRepo, EventRepo, StageRunRepo, TakeRepo
 from server.core.domain import EpisodeCreate, TakeAppend
 
@@ -367,7 +373,7 @@ class TestMediaRoutes:
         source = tmp_path / "clip.wav"
         source.write_bytes(b"RIFFdemo")
 
-        monkeypatch.setattr(media_routes, "resolve_imported_source_path", lambda path: source)
+        monkeypatch.setattr(media_routes, "resolve_voice_library_path", lambda path, allowed_prefixes=("imported", "assets"): source)
         monkeypatch.setattr(media_routes, "guess_media_type", lambda path: "audio/wav")
 
         resp = await client.get("/media/source", params={"path": "imported/demo/clip.wav"})
@@ -389,6 +395,10 @@ class TestMediaRoutes:
                         relative_audio_path="imported/demo/clip.wav",
                         duration_s=2.4,
                         cleanup_mode="light",
+                        preview_relative_path="assets/demo/processed.wav",
+                        original_preview_relative_path="assets/demo/original.wav",
+                        asset_relative_path="assets/demo/processed.wav",
+                        selected_text="hello everyone",
                     ),
                     "hello everyone",
                 )
@@ -402,24 +412,34 @@ class TestMediaRoutes:
                 "end_s": "2.4",
                 "cleanup_mode": "light",
                 "apply_mode": "ultimate_cloning",
+                "asset_name": "Demo Voice",
+                "selected_text": "hello everyone",
             },
             files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
         )
         assert resp.status_code == 200
-        assert resp.json() == {
-            "relativeAudioPath": "imported/demo/clip.wav",
-            "durationS": 2.4,
-            "cleanupMode": "light",
-            "applyMode": "ultimate_cloning",
-            "detectedText": "hello everyone",
-        }
+        data = resp.json()
+        assert data["relativeAudioPath"] == "imported/demo/clip.wav"
+        assert data["durationS"] == 2.4
+        assert data["cleanupMode"] == "light"
+        assert data["applyMode"] == "ultimate_cloning"
+        assert data["detectedText"] == "hello everyone"
+        assert data["previewUrl"].endswith("assets%2Fdemo%2Fprocessed.wav")
+        assert data["originalPreviewUrl"].endswith("assets%2Fdemo%2Foriginal.wav")
+        assert data["assetRelativePath"] == "assets/demo/processed.wav"
+        assert data["selectedText"] == "hello everyone"
 
     async def test_media_process_supports_server_side_source(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
         from server.api.routes import media as media_routes
 
         imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
         monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
-        monkeypatch.setattr(media_routes, "resolve_imported_source_path", lambda path: imported_source)
+        monkeypatch.setattr(media_routes, "load_bilibili_source_sidecar", lambda _: {})
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported", "assets"): imported_source,
+        )
         process_mock = AsyncMock(
             return_value=(
                 MediaProcessResult(
@@ -427,6 +447,10 @@ class TestMediaRoutes:
                     relative_audio_path="imported/demo/clip.wav",
                     duration_s=2.4,
                     cleanup_mode="light",
+                    preview_relative_path="assets/demo/processed.wav",
+                    original_preview_relative_path="assets/demo/original.wav",
+                    asset_relative_path="assets/demo/processed.wav",
+                    selected_text="detected transcript",
                 ),
                 "detected transcript",
             )
@@ -441,6 +465,7 @@ class TestMediaRoutes:
                 "end_s": "2.4",
                 "cleanup_mode": "light",
                 "apply_mode": "ultimate_cloning",
+                "asset_name": "Imported Voice",
             },
         )
 
@@ -459,6 +484,7 @@ class TestMediaRoutes:
                 "end_s": "2.4",
                 "cleanup_mode": "light",
                 "apply_mode": "controllable_cloning",
+                "asset_name": "Demo Voice",
             },
             files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
         )
@@ -477,11 +503,140 @@ class TestMediaRoutes:
                 "end_s": "2.4",
                 "cleanup_mode": "light",
                 "apply_mode": "ultimate_cloning",
+                "asset_name": "Demo Voice",
             },
             files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
         )
         assert resp.status_code == 409
         assert resp.json()["error"] == "whisperx_unavailable"
+
+    async def test_media_subtitles_resolve_prefers_bilibili_official(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported",): imported_source,
+        )
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_bilibili_official_subtitles",
+            lambda _: (
+                "zh",
+                [{"id": "cue_001", "start_s": 0.0, "end_s": 1.2, "text": "大家好"}],
+            ),
+        )
+
+        resp = await client.post(
+            "/media/subtitles/resolve",
+            data={"source_relative_path": "imported/bilibili/BV1/audio/p01.wav"},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "sourceType": "bilibili_official",
+            "language": "zh",
+            "cues": [{"id": "cue_001", "startS": 0.0, "endS": 1.2, "text": "大家好"}],
+        }
+
+    async def test_media_subtitles_resolve_falls_back_to_whisperx(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported",): imported_source,
+        )
+        monkeypatch.setattr(media_routes, "resolve_bilibili_official_subtitles", lambda _: None)
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_whisperx_subtitles",
+            AsyncMock(
+                return_value=SubtitleResolveResult(
+                    source_type="whisperx_generated",
+                    language="zh",
+                    cues=[SubtitleCue(id="cue_001", start_s=0.0, end_s=1.1, text="你好")],
+                )
+            ),
+        )
+
+        resp = await client.post(
+            "/media/subtitles/resolve",
+            data={"source_relative_path": "imported/bilibili/BV1/audio/p01.wav"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["sourceType"] == "whisperx_generated"
+        assert resp.json()["cues"][0]["text"] == "你好"
+
+    async def test_media_trial_synthesis_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        from server.api.routes import media as media_routes
+
+        asset_path = tmp_path / "processed.wav"
+        asset_path.write_bytes(b"RIFFdemo")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("assets",): asset_path,
+        )
+        monkeypatch.setattr(
+            media_routes,
+            "_build_trial_config",
+            lambda apply_mode, asset_relative_path, prompt_text, base_config: FishTTSParams(),
+        )
+
+        class _FakeClient:
+            def __init__(self, *, url: str):
+                self.url = url
+
+            async def synthesize(self, text: str, params):
+                return b"RIFFdemo"
+
+            async def aclose(self):
+                return None
+
+        monkeypatch.setattr(media_routes, "VoxCPMClient", _FakeClient)
+
+        def _fake_write_trial_audio(asset_relative_path, audio_bytes, apply_mode):
+            return TrialSynthesisResult(
+                absolute_path=Path(r"E:\VC\voice_sourse\assets\demo\trial.wav"),
+                relative_audio_path="assets/demo/trial.wav",
+                preview_relative_path="assets/demo/trial.wav",
+                duration_s=3.2,
+                sample_text="",
+            )
+
+        monkeypatch.setattr(
+            media_routes,
+            "write_trial_audio",
+            _fake_write_trial_audio,
+        )
+
+        resp = await client.post(
+            "/media/trial-synthesis",
+            json={
+                "applyMode": "ultimate_cloning",
+                "assetRelativePath": "assets/demo/processed.wav",
+                "promptText": "大家好，欢迎来到这里。",
+                "baseConfig": {"cfg_value": 2.0, "inference_timesteps": 10},
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "trialAudioPath": "assets/demo/trial.wav",
+            "trialPreviewUrl": "/media/source?path=assets%2Fdemo%2Ftrial.wav",
+            "durationS": 3.2,
+            "sampleText": media_routes.TRIAL_SAMPLE_TEXT,
+        }
 
 
 class TestManualReviewConfirm:

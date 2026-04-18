@@ -13,10 +13,13 @@ import {
 import {
   buildConfigFromProcessedMedia,
   buildMediaPreviewUrl,
+  buildNeutralTrialConfig,
   fetchMediaCapabilities,
   getDefaultMediaApplyMode,
   importBilibiliMedia,
   processCloneMedia,
+  requestTrialSynthesis,
+  resolveMediaSubtitles,
   type BilibiliDownloadTarget,
   type BilibiliImportResult,
   type MediaApplyMode,
@@ -24,6 +27,9 @@ import {
   type MediaCleanupMode,
   type MediaProcessResult,
   type MediaSourceMode,
+  type SubtitleCue,
+  type SubtitleResolveResult,
+  type TrialSynthesisResult,
 } from "@/lib/media-clone";
 
 interface Props {
@@ -38,10 +44,15 @@ const ACCEPTED_MEDIA_TYPES =
   "video/mp4,video/quicktime,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a";
 
 function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00.00";
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00.000";
   const minutes = Math.floor(seconds / 60);
   const remaining = seconds % 60;
-  return `${minutes}:${remaining.toFixed(2).padStart(5, "0")}`;
+  return `${minutes}:${remaining.toFixed(3).padStart(6, "0")}`;
+}
+
+function formatDurationLabel(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "未知时长";
+  return `${seconds.toFixed(2)} 秒`;
 }
 
 function cleanupLabel(mode: MediaCleanupMode): string {
@@ -58,6 +69,27 @@ function sourceModeLabel(mode: MediaSourceMode): string {
 
 function downloadTargetLabel(target: BilibiliDownloadTarget): string {
   return target === "video" ? "下载视频" : "仅下载音频";
+}
+
+function subtitleSourceLabel(sourceType: SubtitleResolveResult["sourceType"]): string {
+  return sourceType === "bilibili_official" ? "B 站官方字幕" : "WhisperX 自动字幕";
+}
+
+function getNameFromFilename(value: string): string {
+  const fileName = value.split(/[\\/]/).pop() ?? value;
+  return fileName.replace(/\.[^.]+$/, "").trim();
+}
+
+function sanitizeAssetName(value: string): string {
+  return value.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function joinCueText(cues: SubtitleCue[], language: string): string {
+  if (cues.length === 0) return "";
+  if (language.startsWith("zh")) {
+    return cues.map((cue) => cue.text.trim()).join("");
+  }
+  return cues.map((cue) => cue.text.trim()).join(" ").replace(/\s+/g, " ").trim();
 }
 
 function CapabilityPill({
@@ -125,45 +157,79 @@ export function MediaCloneDialog({
   onApplied,
 }: Props) {
   const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const cueRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
   const [sourceMode, setSourceMode] = useState<MediaSourceMode>("local_file");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sourceRelativePath, setSourceRelativePath] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewKind, setPreviewKind] = useState<"video" | "audio" | null>(null);
+  const [importedMeta, setImportedMeta] = useState<BilibiliImportResult | null>(null);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
   const [startS, setStartS] = useState("0");
   const [endS, setEndS] = useState("");
+  const [assetName, setAssetName] = useState("");
   const [cleanupMode, setCleanupMode] = useState<MediaCleanupMode>("light");
   const [applyMode, setApplyMode] = useState<MediaApplyMode>("controllable_cloning");
+
   const [capabilities, setCapabilities] = useState<MediaCapabilities | null>(null);
   const [loadingCapabilities, setLoadingCapabilities] = useState(false);
+  const [resolvingSubtitles, setResolvingSubtitles] = useState(false);
+  const [subtitleResult, setSubtitleResult] = useState<SubtitleResolveResult | null>(null);
+  const [selectionStart, setSelectionStart] = useState<number | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<number | null>(null);
+
   const [processing, setProcessing] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<MediaProcessResult | null>(null);
+  const [processResult, setProcessResult] = useState<MediaProcessResult | null>(null);
   const [promptText, setPromptText] = useState("");
+  const [trialResult, setTrialResult] = useState<TrialSynthesisResult | null>(null);
+  const [trialing, setTrialing] = useState(false);
+
+  const [importing, setImporting] = useState(false);
   const [bilibiliUrl, setBilibiliUrl] = useState("");
   const [downloadTarget, setDownloadTarget] = useState<BilibiliDownloadTarget>("video");
-  const [importedMeta, setImportedMeta] = useState<BilibiliImportResult | null>(null);
 
   const defaultApplyMode = useMemo(
     () => getDefaultMediaApplyMode(currentConfig),
     [currentConfig],
   );
 
+  const subtitleCues = subtitleResult?.cues ?? [];
+  const rangeStartIndex = selectionStart === null ? null : Math.min(selectionStart, selectionEnd ?? selectionStart);
+  const rangeEndIndex = selectionStart === null ? null : Math.max(selectionStart, selectionEnd ?? selectionStart);
+  const selectedCues = useMemo(() => {
+    if (rangeStartIndex === null || rangeEndIndex === null) return [] as SubtitleCue[];
+    return subtitleCues.slice(rangeStartIndex, rangeEndIndex + 1);
+  }, [rangeEndIndex, rangeStartIndex, subtitleCues]);
+  const selectedText = useMemo(
+    () => joinCueText(selectedCues, subtitleResult?.language ?? "zh"),
+    [selectedCues, subtitleResult?.language],
+  );
+
+  const activeCueId = useMemo(() => {
+    const activeCue = subtitleCues.find(
+      (cue) => currentTime >= cue.startS && currentTime <= cue.endS,
+    );
+    return activeCue?.id ?? null;
+  }, [currentTime, subtitleCues]);
+
   const parsedStartS = Number(startS);
   const parsedEndS = Number(endS);
-  const canProcess = (Boolean(selectedFile) || Boolean(sourceRelativePath))
-    && Boolean(capabilities?.ffmpeg)
-    && Boolean(capabilities?.ffprobe)
+  const hasSource = Boolean(selectedFile) || Boolean(sourceRelativePath);
+  const canProcess = hasSource
+    && Boolean(assetName.trim())
     && Number.isFinite(parsedStartS)
     && Number.isFinite(parsedEndS)
     && parsedEndS > parsedStartS
-    && (cleanupMode !== "vocal_isolate" || Boolean(capabilities?.demucs))
-    && (applyMode !== "ultimate_cloning" || Boolean(capabilities?.whisperx));
+    && Boolean(capabilities?.ffmpeg)
+    && Boolean(capabilities?.ffprobe)
+    && (cleanupMode !== "vocal_isolate" || Boolean(capabilities?.demucs));
+  const canApply = Boolean(processResult)
+    && (applyMode !== "ultimate_cloning" || Boolean(promptText.trim()));
 
-  const clearWorkingSource = useCallback(() => {
+  const resetWorkingSource = useCallback(() => {
     setSelectedFile(null);
     setSourceRelativePath("");
     setPreviewUrl("");
@@ -173,18 +239,24 @@ export function MediaCloneDialog({
     setMediaDuration(0);
     setStartS("0");
     setEndS("");
-    setResult(null);
+    setSubtitleResult(null);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+    setProcessResult(null);
     setPromptText("");
+    setTrialResult(null);
+    cueRefs.current = {};
   }, []);
 
   const resetDialogState = useCallback(() => {
     setSourceMode("local_file");
-    clearWorkingSource();
+    resetWorkingSource();
+    setAssetName("");
     setCleanupMode("light");
     setApplyMode(defaultApplyMode);
     setBilibiliUrl("");
     setDownloadTarget("video");
-  }, [clearWorkingSource, defaultApplyMode]);
+  }, [defaultApplyMode, resetWorkingSource]);
 
   useEffect(() => {
     if (!open) return;
@@ -220,11 +292,43 @@ export function MediaCloneDialog({
   }, [selectedFile, sourceMode]);
 
   useEffect(() => {
-    setResult(null);
-    if (applyMode !== "ultimate_cloning") {
-      setPromptText("");
-    }
-  }, [applyMode, cleanupMode, endS, selectedFile, sourceRelativePath, startS]);
+    if (!hasSource) return;
+    setResolvingSubtitles(true);
+    setSubtitleResult(null);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+    setProcessResult(null);
+    setPromptText("");
+    setTrialResult(null);
+
+    void resolveMediaSubtitles({ file: selectedFile, sourceRelativePath })
+      .then((result) => {
+        setSubtitleResult(result);
+      })
+      .catch((error) => {
+        setSubtitleResult(null);
+        toast.error("生成字幕失败", {
+          description: (error as Error).message,
+        });
+      })
+      .finally(() => setResolvingSubtitles(false));
+  }, [hasSource, selectedFile, sourceRelativePath]);
+
+  useEffect(() => {
+    if (!selectedText) return;
+    setPromptText(selectedText);
+  }, [selectedText]);
+
+  useEffect(() => {
+    if (rangeStartIndex === null || rangeEndIndex === null || selectedCues.length === 0) return;
+    setStartS(selectedCues[0].startS.toFixed(3));
+    setEndS(selectedCues[selectedCues.length - 1].endS.toFixed(3));
+  }, [rangeEndIndex, rangeStartIndex, selectedCues]);
+
+  useEffect(() => {
+    if (!activeCueId) return;
+    cueRefs.current[activeCueId]?.scrollIntoView({ block: "nearest" });
+  }, [activeCueId]);
 
   const handleMediaRef = useCallback((node: HTMLMediaElement | null) => {
     mediaRef.current = node;
@@ -232,13 +336,15 @@ export function MediaCloneDialog({
 
   const handleSourceModeChange = (nextMode: MediaSourceMode) => {
     setSourceMode(nextMode);
-    clearWorkingSource();
+    resetWorkingSource();
+    setAssetName("");
     setBilibiliUrl("");
   };
 
   const handleFileChange = (file: File | null) => {
-    clearWorkingSource();
+    resetWorkingSource();
     setSelectedFile(file);
+    setAssetName(file ? sanitizeAssetName(getNameFromFilename(file.name)) : "");
   };
 
   const handleLoadedMetadata = () => {
@@ -252,6 +358,15 @@ export function MediaCloneDialog({
     }
   };
 
+  const handleCueClick = (index: number) => {
+    if (selectionStart === null || (selectionStart !== null && selectionEnd !== null && selectionStart !== selectionEnd)) {
+      setSelectionStart(index);
+      setSelectionEnd(index);
+      return;
+    }
+    setSelectionEnd(index);
+  };
+
   const handleImportBilibili = async () => {
     if (!bilibiliUrl.trim()) {
       toast.error("请先粘贴一个 B 站视频链接");
@@ -263,11 +378,13 @@ export function MediaCloneDialog({
         url: bilibiliUrl.trim(),
         downloadTarget,
       });
-      clearWorkingSource();
+      resetWorkingSource();
       setImportedMeta(imported);
       setSourceRelativePath(imported.sourceRelativePath);
       setPreviewUrl(buildMediaPreviewUrl(imported.previewUrl));
       setPreviewKind(imported.mediaType);
+      setAssetName(sanitizeAssetName(imported.owner ? `${imported.owner}-${imported.title}` : imported.title));
+      setEndS(imported.durationS > 0 ? imported.durationS.toFixed(3) : "");
       toast.success("B 站素材已导入", {
         description: `${downloadTargetLabel(imported.downloadTarget)} · ${imported.title}`,
       });
@@ -280,6 +397,30 @@ export function MediaCloneDialog({
     }
   };
 
+  const runTrialSynthesis = useCallback(async (
+    processed: MediaProcessResult,
+    nextPromptText: string,
+  ) => {
+    setTrialing(true);
+    try {
+      const trial = await requestTrialSynthesis({
+        applyMode,
+        assetRelativePath: processed.assetRelativePath,
+        promptText: applyMode === "ultimate_cloning" ? nextPromptText : undefined,
+        baseConfig: buildNeutralTrialConfig(currentConfig),
+      });
+      setTrialResult(trial);
+      toast.success("固定试配音已生成");
+    } catch (error) {
+      setTrialResult(null);
+      toast.error("生成固定试配音失败", {
+        description: (error as Error).message,
+      });
+    } finally {
+      setTrialing(false);
+    }
+  }, [applyMode, currentConfig]);
+
   const handleProcess = async () => {
     if (!canProcess) return;
     setProcessing(true);
@@ -291,10 +432,21 @@ export function MediaCloneDialog({
         endS: parsedEndS,
         cleanupMode,
         applyMode,
+        assetName: assetName.trim(),
+        selectedText,
       });
-      setResult(processed);
-      setPromptText(processed.detectedText ?? "");
+      setProcessResult(processed);
+
+      const nextPromptText =
+        applyMode === "ultimate_cloning"
+          ? (promptText.trim() || processed.selectedText || processed.detectedText || "").trim()
+          : "";
+      if (applyMode === "ultimate_cloning") {
+        setPromptText(nextPromptText);
+      }
+
       toast.success("素材处理完成");
+      await runTrialSynthesis(processed, nextPromptText);
     } catch (error) {
       toast.error("素材处理失败", {
         description: (error as Error).message,
@@ -305,17 +457,17 @@ export function MediaCloneDialog({
   };
 
   const handleApply = async () => {
-    if (!result) return;
+    if (!processResult) return;
     if (applyMode === "ultimate_cloning" && !promptText.trim()) {
-      toast.error("极致克隆需要 prompt_text，请先确认或补充转写文本");
+      toast.error("极致克隆需要 prompt_text，请先确认字幕文本");
       return;
     }
-    setApplying(true);
+
     try {
       const nextConfig = buildConfigFromProcessedMedia(
         currentConfig,
         applyMode,
-        result.relativeAudioPath,
+        processResult.assetRelativePath,
         promptText,
       );
       await onApplyConfig(nextConfig);
@@ -328,29 +480,27 @@ export function MediaCloneDialog({
       toast.error("套用素材失败", {
         description: (error as Error).message,
       });
-    } finally {
-      setApplying(false);
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent className="max-w-5xl">
         <DialogHeader>
           <DialogTitle>素材处理</DialogTitle>
           <DialogDescription>
-            支持本地文件和 B 站公开视频链接。下载或导入素材后，可继续预览、裁剪、清理并一键回填到当前 Episode 的 VoxCPM 克隆配置。
+            先导入素材，再按字幕选段、处理试听，最后决定是否套用到当前 Episode。
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[78vh] space-y-5 overflow-y-auto px-5 py-4">
+        <div className="max-h-[82vh] space-y-5 overflow-y-auto px-5 py-4">
           <section className="space-y-2">
             <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
               本地能力
             </div>
             {loadingCapabilities ? (
               <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                正在检测 ffmpeg / Demucs / WhisperX / B 站导入能力...
+                正在检测 ffmpeg、Demucs、WhisperX 和试配音能力…
               </div>
             ) : capabilities ? (
               <>
@@ -359,325 +509,418 @@ export function MediaCloneDialog({
                   <CapabilityPill label="ffprobe" ok={capabilities.ffprobe} detail={capabilities.ffprobeError} />
                   <CapabilityPill label="Demucs" ok={capabilities.demucs} detail={capabilities.demucsError} />
                   <CapabilityPill label="WhisperX" ok={capabilities.whisperx} detail={capabilities.whisperxError} />
-                  <CapabilityPill label="B 站导入" ok={capabilities.bilibiliEnabled} />
+                  <CapabilityPill label="官方字幕" ok={capabilities.officialSubtitles} />
+                  <CapabilityPill label="试配音" ok={capabilities.trialSynthesis} />
                 </div>
-                <div className="space-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-                  <div>
-                    输出目录：<span className="font-mono">{capabilities.voiceSourceDir}</span>
-                  </div>
-                  <div>
-                    B 站导入范围：{capabilities.bilibiliPublicOnly ? "仅公开视频" : "支持登录扩展"}
-                  </div>
+                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  素材目录：<code>{capabilities.voiceSourceDir}</code>
                 </div>
               </>
-            ) : (
-              <div className="text-xs text-red-500">
-                能力检测失败，请确认本地 API 已启动。
-              </div>
-            )}
+            ) : null}
           </section>
 
-          <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
+          <section className="space-y-3 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
             <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              1. 选择素材来源
+              第一步：导入素材
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <ChoiceCard
                 title="本地文件"
-                description="手动导入 mp4 / mov / mkv / mp3 / wav / m4a，然后在当前窗口里预览和裁剪。"
+                description="导入本地 mp4、mov、mkv、mp3、wav、m4a 文件。"
                 active={sourceMode === "local_file"}
                 onClick={() => handleSourceModeChange("local_file")}
               />
               <ChoiceCard
                 title="B 站链接"
-                description="直接粘贴公开视频链接，下载到本地缓存后自动进入预览与裁剪窗口。"
+                description="粘贴公开 B 站链接，直接下载到本地缓存并进入预览。"
                 active={sourceMode === "bilibili_link"}
-                disabled={!capabilities?.bilibiliEnabled}
                 onClick={() => handleSourceModeChange("bilibili_link")}
               />
-            </div>
-          </section>
-
-          <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
-            <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              2. 导入素材
             </div>
 
             {sourceMode === "local_file" ? (
               <div className="space-y-2">
+                <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                  选择本地文件
+                </label>
                 <input
                   type="file"
                   accept={ACCEPTED_MEDIA_TYPES}
-                  onChange={(event) => handleFileChange(event.currentTarget.files?.[0] ?? null)}
-                  className="block w-full text-sm text-neutral-700 dark:text-neutral-200"
+                  onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
+                  className="block w-full text-sm text-neutral-700 file:mr-3 file:rounded file:border-0 file:bg-neutral-900 file:px-3 file:py-2 file:text-white hover:file:bg-neutral-800 dark:text-neutral-200 dark:file:bg-neutral-100 dark:file:text-neutral-900 dark:hover:file:bg-neutral-200"
                 />
                 {selectedFile ? (
-                  <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                    当前文件：<span className="font-mono">{selectedFile.name}</span>
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                    当前素材：{selectedFile.name} · {sourceModeLabel(sourceMode)}
                   </div>
-                ) : (
-                  <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                    请选择一个本地音视频文件。
-                  </div>
-                )}
+                ) : null}
               </div>
             ) : (
               <div className="space-y-3">
-                <label className="block space-y-1 text-xs text-neutral-600 dark:text-neutral-300">
-                  <span>B 站视频链接</span>
-                  <input
-                    type="url"
-                    value={bilibiliUrl}
-                    onChange={(event) => setBilibiliUrl(event.currentTarget.value)}
-                    placeholder="https://www.bilibili.com/video/BV..."
-                    className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
-                  />
-                </label>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <ChoiceCard
-                    title="下载视频"
-                    description="保留画面，适合先预览内容再精确裁剪需要的片段。"
-                    active={downloadTarget === "video"}
-                    onClick={() => setDownloadTarget("video")}
-                  />
-                  <ChoiceCard
-                    title="仅下载音频"
-                    description="更快拿到音频素材，适合只想复刻音色、不需要画面预览的场景。"
-                    active={downloadTarget === "audio"}
-                    onClick={() => setDownloadTarget("audio")}
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={handleImportBilibili}
-                    disabled={importing || !bilibiliUrl.trim() || !capabilities?.bilibiliEnabled}
-                    className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-neutral-300 dark:disabled:bg-neutral-700"
-                  >
-                    {importing ? "正在解析并下载..." : "解析并下载"}
-                  </button>
-                  <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                    当前版本只支持公开可访问的普通 B 站视频链接，不支持登录态、会员或付费内容。
-                  </span>
+                <div className="grid gap-3 md:grid-cols-[1fr_220px_auto]">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                      B 站公开视频链接
+                    </label>
+                    <input
+                      type="text"
+                      value={bilibiliUrl}
+                      onChange={(event) => setBilibiliUrl(event.target.value)}
+                      placeholder="https://www.bilibili.com/video/BV..."
+                      className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                      下载目标
+                    </label>
+                    <select
+                      value={downloadTarget}
+                      onChange={(event) => setDownloadTarget(event.target.value as BilibiliDownloadTarget)}
+                      className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                    >
+                      <option value="video">下载视频（用于画面预览+剪辑）</option>
+                      <option value="audio">仅下载音频（更快提取音色）</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={handleImportBilibili}
+                      disabled={importing}
+                      className="rounded bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-800 disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
+                    >
+                      {importing ? "下载中…" : "解析并下载"}
+                    </button>
+                  </div>
                 </div>
                 {importedMeta ? (
-                  <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200">
-                    <div className="font-medium">{importedMeta.title}</div>
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                      <span>UP 主：{importedMeta.owner || "未知"}</span>
-                      <span>来源：{downloadTargetLabel(importedMeta.downloadTarget)}</span>
-                      <span>时长：{formatTime(importedMeta.durationS)}</span>
-                      <span>缓存路径：{importedMeta.sourceRelativePath}</span>
-                    </div>
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                    <div>标题：{importedMeta.title}</div>
+                    <div>作者：{importedMeta.owner || "未知"}</div>
+                    <div>时长：{formatDurationLabel(importedMeta.durationS)}</div>
+                    <div>导入方式：{downloadTargetLabel(importedMeta.downloadTarget)}</div>
                   </div>
                 ) : null}
               </div>
             )}
           </section>
 
-          <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
-            <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              3. 预览与裁剪
-            </div>
-            {previewUrl ? (
-              <div className="space-y-3">
-                {previewKind === "video" ? (
-                  <video
-                    ref={handleMediaRef}
-                    src={previewUrl}
-                    controls
-                    className="max-h-[260px] w-full rounded bg-black"
-                    onLoadedMetadata={handleLoadedMetadata}
-                    onTimeUpdate={() => setCurrentTime(mediaRef.current?.currentTime ?? 0)}
-                  />
-                ) : (
-                  <audio
-                    ref={handleMediaRef}
-                    src={previewUrl}
-                    controls
-                    className="w-full"
-                    onLoadedMetadata={handleLoadedMetadata}
-                    onTimeUpdate={() => setCurrentTime(mediaRef.current?.currentTime ?? 0)}
-                  />
-                )}
-
-                <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
-                  <span>
-                    当前时间：<span className="font-mono">{formatTime(currentTime)}</span>
-                  </span>
-                  <span>
-                    总时长：<span className="font-mono">{formatTime(mediaDuration)}</span>
-                  </span>
-                  <span>
-                    来源：<span className="font-medium">{sourceModeLabel(sourceMode)}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setStartS(currentTime.toFixed(3))}
-                    className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
-                  >
-                    设为开始
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEndS(currentTime.toFixed(3))}
-                    className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-100 dark:border-neutral-600 dark:hover:bg-neutral-800"
-                  >
-                    设为结束
-                  </button>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1 text-xs text-neutral-600 dark:text-neutral-300">
-                    <span>开始时间（秒）</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={startS}
-                      onChange={(event) => setStartS(event.currentTarget.value)}
-                      className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-sm dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
-                    />
-                  </label>
-                  <label className="space-y-1 text-xs text-neutral-600 dark:text-neutral-300">
-                    <span>结束时间（秒）</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={endS}
-                      onChange={(event) => setEndS(event.currentTarget.value)}
-                      className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-sm dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
-                    />
-                  </label>
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                先导入一个本地文件或 B 站素材，才能预览和裁剪。
-              </div>
-            )}
-          </section>
-
-          <section className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
+          <section className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
+            <div className="space-y-3 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
               <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                4. 清理模式
+                第二步：预览与字幕选段
               </div>
-              <div className="space-y-2">
-                <ChoiceCard
-                  title="轻量稳定"
-                  description="只依赖 ffmpeg，做抽音、单声道、重采样、响度规范和轻降噪，处理速度更快。"
-                  active={cleanupMode === "light"}
-                  onClick={() => setCleanupMode("light")}
-                />
-                <ChoiceCard
-                  title="重度人声分离"
-                  description={
-                    capabilities?.demucs
-                      ? "先做人声分离，再输出更干净的人声片段，更适合从复杂背景里提取音色。"
-                      : `当前不可用：${capabilities?.demucsError ?? "需要先安装 Demucs"}`
-                  }
-                  active={cleanupMode === "vocal_isolate"}
-                  disabled={!capabilities?.demucs}
-                  onClick={() => setCleanupMode("vocal_isolate")}
-                />
-              </div>
-            </div>
+              {previewUrl ? (
+                <div className="space-y-3">
+                  {previewKind === "video" ? (
+                    <video
+                      ref={handleMediaRef}
+                      src={previewUrl}
+                      controls
+                      onLoadedMetadata={handleLoadedMetadata}
+                      onTimeUpdate={() => setCurrentTime(mediaRef.current?.currentTime ?? 0)}
+                      className="max-h-80 w-full rounded-lg border border-neutral-200 bg-black dark:border-neutral-700"
+                    />
+                  ) : (
+                    <audio
+                      ref={handleMediaRef}
+                      src={previewUrl}
+                      controls
+                      onLoadedMetadata={handleLoadedMetadata}
+                      onTimeUpdate={() => setCurrentTime(mediaRef.current?.currentTime ?? 0)}
+                      className="w-full"
+                    />
+                  )}
 
-            <div className="space-y-2 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
-              <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                5. 套用模式
-              </div>
-              <div className="space-y-2">
-                <ChoiceCard
-                  title="可控克隆"
-                  description="把处理后的素材写入 reference_audio_path，保留音色，同时保留当前集的其它稳定参数。"
-                  active={applyMode === "controllable_cloning"}
-                  onClick={() => setApplyMode("controllable_cloning")}
-                />
-                <ChoiceCard
-                  title="极致克隆"
-                  description={
-                    capabilities?.whisperx
-                      ? "把处理后的素材写入 prompt_audio_path，并用 WhisperX 自动生成可编辑的 prompt_text。"
-                      : `当前不可用：${capabilities?.whisperxError ?? "需要先启动 WhisperX"}`
-                  }
-                  active={applyMode === "ultimate_cloning"}
-                  disabled={!capabilities?.whisperx}
-                  onClick={() => setApplyMode("ultimate_cloning")}
-                />
-              </div>
-            </div>
-          </section>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+                    <span>当前时间：{formatTime(currentTime)}</span>
+                    <span>总时长：{formatDurationLabel(mediaDuration)}</span>
+                    <button
+                      type="button"
+                      onClick={() => setStartS(currentTime.toFixed(3))}
+                      className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
+                    >
+                      设为开始
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEndS(currentTime.toFixed(3))}
+                      className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
+                    >
+                      设为结束
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectionStart(null);
+                        setSelectionEnd(null);
+                      }}
+                      className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
+                    >
+                      清空选段
+                    </button>
+                  </div>
 
-          <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+                      开始时间
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        value={startS}
+                        onChange={(event) => setStartS(event.target.value)}
+                        className="mt-1 w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                      />
+                    </label>
+                    <label className="block text-xs text-neutral-600 dark:text-neutral-400">
+                      结束时间
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        value={endS}
+                        onChange={(event) => setEndS(event.target.value)}
+                        className="mt-1 w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-neutral-200 px-3 py-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                  先导入一个本地文件或 B 站素材，随后会进入字幕选段。
+                </div>
+              )}
+            </div>
+            <div className="space-y-3 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
+              <div className="flex items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                  6. 处理并生成克隆素材
+                  字幕选段
                 </div>
-                <div className="text-xs text-neutral-500 dark:text-neutral-400">
-                  当前会按 <span className="font-medium">{cleanupLabel(cleanupMode)}</span> 处理，
-                  并按 <span className="font-medium">{applyModeLabel(applyMode)}</span> 套用到当前 Episode。
+                {subtitleResult ? (
+                  <span className="rounded-full border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
+                    {subtitleSourceLabel(subtitleResult.sourceType)} · {subtitleResult.language}
+                  </span>
+                ) : null}
+              </div>
+
+              {resolvingSubtitles ? (
+                <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400">
+                  正在解析字幕…
+                </div>
+              ) : subtitleCues.length > 0 ? (
+                <>
+                  <div className="h-[168px] space-y-2 overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-2 dark:border-neutral-700 dark:bg-neutral-800">
+                    {subtitleCues.map((cue, index) => {
+                      const isSelected = rangeStartIndex !== null && rangeEndIndex !== null
+                        ? index >= rangeStartIndex && index <= rangeEndIndex
+                        : false;
+                      const isActive = activeCueId === cue.id;
+                      return (
+                        <button
+                          key={cue.id}
+                          type="button"
+                          ref={(node) => {
+                            cueRefs.current[cue.id] = node;
+                          }}
+                          onClick={() => handleCueClick(index)}
+                          className={`block w-full rounded-md border px-3 py-2 text-left text-xs transition ${
+                            isSelected
+                              ? "border-blue-500 bg-blue-50 text-blue-900 dark:border-blue-400 dark:bg-blue-950/30 dark:text-blue-100"
+                              : isActive
+                                ? "border-emerald-400 bg-emerald-50 text-emerald-900 dark:border-emerald-400 dark:bg-emerald-950/30 dark:text-emerald-100"
+                                : "border-transparent hover:border-neutral-300 hover:bg-white dark:hover:border-neutral-600 dark:hover:bg-neutral-900"
+                          }`}
+                        >
+                          <div className="mb-1 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                            {formatTime(cue.startS)} - {formatTime(cue.endS)}
+                          </div>
+                          <div className="leading-relaxed">{cue.text}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
+                    {selectedCues.length > 0 ? (
+                      <>
+                        <div className="font-medium">已选 {selectedCues.length} 条连续字幕</div>
+                        <div className="mt-1 text-neutral-500 dark:text-neutral-400">
+                          {selectedText}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-neutral-500 dark:text-neutral-400">
+                        点击一条字幕作为开始，再点击另一条字幕作为结束；中间区间会自动高亮。
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed border-neutral-200 px-3 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                  当前还没有可用字幕。你仍然可以手动填写开始和结束时间作为兜底。
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-4 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
+            <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              第三步：处理与试听
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-[1fr_1fr_1fr]">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                  声音名称
+                </label>
+                <input
+                  type="text"
+                  value={assetName}
+                  onChange={(event) => setAssetName(sanitizeAssetName(event.target.value))}
+                  placeholder="例如：小A的声音"
+                  className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                  清理模式
+                </div>
+                <div className="grid gap-2">
+                  <ChoiceCard
+                    title="轻量稳定"
+                    description="ffmpeg 裁剪、重采样、响度规范，并做轻量降噪。"
+                    active={cleanupMode === "light"}
+                    onClick={() => setCleanupMode("light")}
+                  />
+                  <ChoiceCard
+                    title="重度人声分离"
+                    description="先跑 Demucs 分离人声，再做统一规范化。"
+                    active={cleanupMode === "vocal_isolate"}
+                    disabled={!capabilities?.demucs}
+                    onClick={() => setCleanupMode("vocal_isolate")}
+                  />
                 </div>
               </div>
+              <div>
+                <div className="mb-1 text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                  套用模式
+                </div>
+                <div className="grid gap-2">
+                  <ChoiceCard
+                    title="可控克隆"
+                    description="保存为 reference_audio_path，并清掉 prompt 相关字段。"
+                    active={applyMode === "controllable_cloning"}
+                    onClick={() => setApplyMode("controllable_cloning")}
+                  />
+                  <ChoiceCard
+                    title="极致克隆"
+                    description="保存为 prompt_audio_path + prompt_text，并清掉 reference/control。"
+                    active={applyMode === "ultimate_cloning"}
+                    onClick={() => setApplyMode("ultimate_cloning")}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 onClick={handleProcess}
                 disabled={!canProcess || processing}
-                className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-neutral-300 dark:disabled:bg-neutral-700"
+                className="rounded bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-800 disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
               >
-                {processing ? "处理中..." : "处理素材"}
+                {processing ? "处理中…" : "生成处理后素材并试听"}
               </button>
+              <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                当前将使用 {cleanupLabel(cleanupMode)} · {applyModeLabel(applyMode)}
+              </span>
             </div>
-
-            {result ? (
-              <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
-                <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-                  已生成可套用素材
-                </div>
-                <div className="grid gap-2 text-xs text-emerald-900 dark:text-emerald-100 md:grid-cols-2">
-                  <div>输出路径：<span className="font-mono">{result.relativeAudioPath}</span></div>
-                  <div>时长：<span className="font-mono">{formatTime(result.durationS)}</span></div>
-                  <div>清理模式：{cleanupLabel(result.cleanupMode)}</div>
-                  <div>套用模式：{applyModeLabel(result.applyMode)}</div>
-                </div>
-                {applyMode === "ultimate_cloning" ? (
-                  <label className="block space-y-1 text-xs text-neutral-700 dark:text-neutral-200">
-                    <span>自动生成的 prompt_text（可编辑后再套用）</span>
-                    <textarea
-                      value={promptText}
-                      onChange={(event) => setPromptText(event.currentTarget.value)}
-                      rows={4}
-                      className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-100"
-                    />
-                  </label>
-                ) : (
-                  <div className="text-xs text-neutral-600 dark:text-neutral-300">
-                    该素材会作为 <span className="font-medium">reference_audio_path</span> 回填到当前 Episode。
+            {processResult ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    处理后素材
                   </div>
-                )}
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                    先听原始选段，再听处理结果，确认是否需要重新抽卡或改清理模式。
+                  </div>
+                  <div>
+                    <div className="mb-1 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                      原始选段试听
+                    </div>
+                    <audio controls src={buildMediaPreviewUrl(processResult.originalPreviewUrl)} className="w-full" />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                      处理后素材试听
+                    </div>
+                    <audio controls src={buildMediaPreviewUrl(processResult.previewUrl)} className="w-full" />
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    固定试配音
+                  </div>
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                    试配音文稿：欢迎来到姜Sir的TTS工作台，如果觉得好用，请去GitHub给我点个star，你的支持是我继续前进的动力
+                  </div>
+                  {applyMode === "ultimate_cloning" ? (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                        最终使用的 prompt_text
+                      </label>
+                      <textarea
+                        value={promptText}
+                        onChange={(event) => setPromptText(event.target.value)}
+                        className="min-h-24 w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void runTrialSynthesis(processResult, promptText.trim())}
+                      disabled={trialing || (applyMode === "ultimate_cloning" && !promptText.trim())}
+                      className="rounded border border-neutral-300 px-3 py-2 text-sm hover:bg-neutral-50 disabled:cursor-not-allowed disabled:text-neutral-400 dark:border-neutral-600 dark:hover:bg-neutral-800 dark:disabled:text-neutral-500"
+                    >
+                      {trialing ? "试听生成中…" : "重新生成试听"}
+                    </button>
+                    {trialResult ? (
+                      <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                        最近一次试听时长：{formatDurationLabel(trialResult.durationS)}
+                      </span>
+                    ) : null}
+                  </div>
+                  {trialResult ? (
+                    <audio controls src={buildMediaPreviewUrl(trialResult.trialPreviewUrl)} className="w-full" />
+                  ) : (
+                    <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                      处理完成后会自动生成一条固定试配音，便于你快速判断克隆效果。
+                    </div>
+                  )}
+                </div>
               </div>
             ) : null}
           </section>
         </div>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter>
           <button
             type="button"
             onClick={onClose}
-            className="rounded border border-neutral-300 px-3 py-2 text-sm text-neutral-700 hover:bg-neutral-50 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
           >
-            取消
+            关闭
           </button>
           <button
             type="button"
             onClick={handleApply}
-            disabled={!result || applying}
-            className="rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-neutral-300 dark:disabled:bg-neutral-700"
+            disabled={!canApply}
+            className="rounded bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-800 disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
           >
-            {applying ? "正在套用..." : "套用到当前 Episode"}
+            套用到当前 Episode
           </button>
         </DialogFooter>
       </DialogContent>

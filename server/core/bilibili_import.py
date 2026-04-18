@@ -70,6 +70,25 @@ class BilibiliEpisodePage:
     duration_s: float
 
 
+@dataclass
+class BilibiliSubtitleTrack:
+    lan: str
+    lan_doc: str
+    subtitle_url: str
+
+
+@dataclass
+class BilibiliSourceSidecar:
+    bvid: str
+    cid: int
+    page_number: int
+    normalized_url: str
+    title: str
+    owner: str | None
+    duration_s: float
+    subtitle_tracks: list[BilibiliSubtitleTrack]
+
+
 def bilibili_status() -> bool:
     return True
 
@@ -154,6 +173,62 @@ def guess_media_type(path: Path) -> str:
 
 def build_preview_url(relative_path: str) -> str:
     return f"/media/source?path={quote(relative_path, safe='')}"
+
+
+def build_bilibili_source_sidecar_path(media_path: Path) -> Path:
+    return media_path.with_suffix(".source.json")
+
+
+def _normalize_subtitle_url(value: str) -> str:
+    url = value.strip()
+    if url.startswith("//"):
+        return f"https:{url}"
+    return url
+
+
+def _serialize_bilibili_sidecar(sidecar: BilibiliSourceSidecar) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "source": "bilibili",
+        "bvid": sidecar.bvid,
+        "cid": sidecar.cid,
+        "pageNumber": sidecar.page_number,
+        "normalizedUrl": sidecar.normalized_url,
+        "title": sidecar.title,
+        "owner": sidecar.owner,
+        "durationS": sidecar.duration_s,
+        "subtitleTracks": [
+            {
+                "lan": track.lan,
+                "lanDoc": track.lan_doc,
+                "subtitleUrl": track.subtitle_url,
+            }
+            for track in sidecar.subtitle_tracks
+        ],
+    }
+
+
+def _save_bilibili_sidecar(media_path: Path, sidecar: BilibiliSourceSidecar) -> None:
+    destination = build_bilibili_source_sidecar_path(media_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(_serialize_bilibili_sidecar(sidecar), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_bilibili_source_sidecar(relative_source_path: str | Path) -> dict[str, Any] | None:
+    media_path = resolve_imported_source_path(relative_source_path)
+    sidecar_path = build_bilibili_source_sidecar_path(media_path)
+    if not sidecar_path.exists():
+        return None
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - corrupt file is rare
+        raise DomainError("invalid_state", f"B 站源信息 sidecar 读取失败：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise DomainError("invalid_state", "B 站源信息 sidecar 格式无效")
+    return payload
 
 
 def _repo_root() -> Path:
@@ -324,6 +399,37 @@ def _fetch_playurl(client: httpx.Client, *, bvid: str, cid: int) -> dict[str, An
     if not isinstance(payload, dict):
         raise DomainError("bilibili_unavailable", "B 站播放地址接口返回了异常结果")
     return _get_response_data(payload)
+
+
+def _fetch_subtitle_tracks(client: httpx.Client, *, bvid: str, cid: int) -> list[BilibiliSubtitleTrack]:
+    payload = _request_text_or_json(
+        client,
+        f"https://api.bilibili.com/x/player/v2?bvid={bvid}&cid={cid}",
+    )
+    if not isinstance(payload, dict):
+        raise DomainError("bilibili_unavailable", "B 站字幕接口返回了异常结果")
+    data = _get_response_data(payload)
+    subtitle = data.get("subtitle")
+    if not isinstance(subtitle, dict):
+        return []
+    items = subtitle.get("subtitles")
+    if not isinstance(items, list):
+        return []
+    tracks: list[BilibiliSubtitleTrack] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        subtitle_url = _normalize_subtitle_url(str(item.get("subtitle_url") or item.get("url") or ""))
+        if not subtitle_url:
+            continue
+        tracks.append(
+            BilibiliSubtitleTrack(
+                lan=str(item.get("lan") or "").strip(),
+                lan_doc=str(item.get("lan_doc") or "").strip(),
+                subtitle_url=subtitle_url,
+            )
+        )
+    return tracks
 
 
 def _pick_video_stream(playurl: dict[str, Any]) -> dict[str, Any]:
@@ -506,6 +612,78 @@ def _reuse_if_exists(
     )
 
 
+def _preferred_subtitle_track(payload: dict[str, Any]) -> dict[str, Any] | None:
+    tracks = payload.get("subtitleTracks")
+    if not isinstance(tracks, list) or not tracks:
+        return None
+
+    def _priority(track: dict[str, Any]) -> tuple[int, str]:
+        lan = str(track.get("lan") or "").lower()
+        lan_doc = str(track.get("lanDoc") or "").lower()
+        if lan.startswith("zh") or "中文" in lan_doc:
+            return (0, lan)
+        if lan.startswith("en") or "英文" in lan_doc or "english" in lan_doc:
+            return (1, lan)
+        return (2, lan)
+
+    normalized = [track for track in tracks if isinstance(track, dict) and str(track.get("subtitleUrl") or "").strip()]
+    if not normalized:
+        return None
+    normalized.sort(key=_priority)
+    return normalized[0]
+
+
+def resolve_bilibili_official_subtitles(relative_source_path: str | Path) -> tuple[str, list[dict[str, Any]]] | None:
+    payload = load_bilibili_source_sidecar(relative_source_path)
+    if payload is None:
+        return None
+    track = _preferred_subtitle_track(payload)
+    if track is None:
+        return None
+
+    try:
+        response = httpx.get(
+            str(track["subtitleUrl"]),
+            headers=_REQUEST_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        subtitle_payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        raise DomainError("subtitle_unavailable", f"B 站官方字幕下载失败：{type(exc).__name__}: {exc}") from exc
+
+    body = subtitle_payload.get("body")
+    if not isinstance(body, list):
+        return None
+    cues: list[dict[str, Any]] = []
+    for index, item in enumerate(body, start=1):
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text:
+            continue
+        try:
+            start_s = round(float(item.get("from")), 3)
+            end_s = round(float(item.get("to")), 3)
+        except (TypeError, ValueError):
+            continue
+        if end_s <= start_s:
+            continue
+        cues.append(
+            {
+                "id": f"cue_{index:03d}",
+                "start_s": start_s,
+                "end_s": end_s,
+                "text": text,
+            }
+        )
+    if not cues:
+        return None
+    language = str(track.get("lan") or payload.get("language") or "zh").strip() or "zh"
+    return language, cues
+
+
 def import_bilibili_media(
     url: str,
     *,
@@ -533,6 +711,7 @@ def import_bilibili_media(
                 owner = None
                 if isinstance(metadata.get("owner"), dict):
                     owner = str(metadata["owner"].get("name") or "").strip() or None
+                subtitle_tracks = _fetch_subtitle_tracks(client, bvid=target.bvid, cid=page.cid)
 
                 suffix = ".mp4" if download_target == "video" else ".wav"
                 relative_path = build_bilibili_cache_relative_path(
@@ -551,6 +730,19 @@ def import_bilibili_media(
                     download_target=download_target,
                 )
                 if reused is not None:
+                    _save_bilibili_sidecar(
+                        destination,
+                        BilibiliSourceSidecar(
+                            bvid=target.bvid,
+                            cid=page.cid,
+                            page_number=page.page_number,
+                            normalized_url=normalized_url,
+                            title=title,
+                            owner=owner,
+                            duration_s=reused.duration_s or page.duration_s,
+                            subtitle_tracks=subtitle_tracks,
+                        ),
+                    )
                     return reused
 
                 playurl = _fetch_playurl(client, bvid=target.bvid, cid=page.cid)
@@ -574,6 +766,19 @@ def import_bilibili_media(
                         shutil.copyfile(temp_output, destination)
 
             probe = probe_media(destination)
+            _save_bilibili_sidecar(
+                destination,
+                BilibiliSourceSidecar(
+                    bvid=target.bvid,
+                    cid=page.cid,
+                    page_number=page.page_number,
+                    normalized_url=normalized_url,
+                    title=title,
+                    owner=owner,
+                    duration_s=probe.duration_s or page.duration_s,
+                    subtitle_tracks=subtitle_tracks,
+                ),
+            )
             return BilibiliImportResult(
                 absolute_path=destination,
                 relative_source_path=to_relative_audio_path(destination) or relative_path.as_posix(),
