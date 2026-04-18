@@ -5,12 +5,13 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import uuid4
 
 from server.core.domain import DomainError
 
 PresetScope = Literal["project", "global"]
+TtsMode = Literal["voice_design", "controllable_cloning", "ultimate_cloning"]
 
 CONFIG_KEYS = (
     "cfg_value",
@@ -97,7 +98,49 @@ def sanitize_tts_config(input_config: dict[str, Any] | None) -> dict[str, Any]:
             if not value:
                 continue
         result[key] = value
-    return result
+    return apply_tts_mode_rules(result)
+
+
+def _get_config_string(source: Mapping[str, Any], key: str) -> str:
+    value = source.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def infer_tts_mode(config: Mapping[str, Any] | None) -> TtsMode:
+    source = config or {}
+    prompt_audio = _get_config_string(source, "prompt_audio_path")
+    prompt_text = _get_config_string(source, "prompt_text")
+    reference_audio = _get_config_string(source, "reference_audio_path")
+
+    if prompt_audio or prompt_text:
+        return "ultimate_cloning"
+    if reference_audio:
+        return "controllable_cloning"
+    return "voice_design"
+
+
+def apply_tts_mode_rules(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop stale fields that belong to a different TTS mode.
+
+    This keeps stored episode config, presets, and per-run params aligned with
+    the single active mode instead of carrying fields from older edits.
+    """
+
+    cleaned = dict(config or {})
+    mode = infer_tts_mode(cleaned)
+
+    if mode == "ultimate_cloning":
+        cleaned.pop("control_prompt", None)
+        cleaned.pop("reference_audio_path", None)
+    elif mode == "controllable_cloning":
+        cleaned.pop("prompt_audio_path", None)
+        cleaned.pop("prompt_text", None)
+    else:
+        cleaned.pop("reference_audio_path", None)
+        cleaned.pop("prompt_audio_path", None)
+        cleaned.pop("prompt_text", None)
+
+    return cleaned
 
 
 def _normalize_slashes(value: str) -> str:
@@ -412,14 +455,17 @@ __all__ = [
     "AUDIO_PATH_FIELDS",
     "CONFIG_KEYS",
     "PresetScope",
+    "TtsMode",
     "TtsPresetDocument",
     "TtsPresetRecord",
+    "apply_tts_mode_rules",
     "create_preset",
     "delete_preset",
     "export_preset_document",
     "get_audio_path_root",
     "get_preset_file_path",
     "get_voice_source_dir",
+    "infer_tts_mode",
     "import_preset_document",
     "load_preset_document",
     "normalize_tts_config",

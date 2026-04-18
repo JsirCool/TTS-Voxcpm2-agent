@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from .domain import FishTTSParams
-from .tts_presets import resolve_audio_path
+from .tts_presets import apply_tts_mode_rules, infer_tts_mode, resolve_audio_path
 
 DEFAULT_VOXCPM_URL = os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
@@ -68,9 +68,11 @@ class VoxCPMClient:
 
     def build_payload(self, text: str, params: FishTTSParams) -> dict[str, Any]:
         """Return the JSON request expected by the local service."""
+        params = sanitize_params_for_mode(params)
+        mode = infer_tts_mode(params.model_dump())
         text = text.strip()
         control_prompt = (params.control_prompt or "").strip()
-        if control_prompt:
+        if mode != "ultimate_cloning" and control_prompt:
             text = f"({control_prompt}){text}"
 
         reference_audio = resolve_audio_path(params.reference_audio_path)
@@ -139,6 +141,12 @@ class VoxCPMClient:
         )
 
 
+def sanitize_params_for_mode(params: FishTTSParams) -> FishTTSParams:
+    """Return a mode-consistent param object for downstream synthesis/storage."""
+
+    return FishTTSParams(**apply_tts_mode_rules(params.model_dump()))
+
+
 def build_params_from_env(overrides: dict[str, Any] | None = None) -> FishTTSParams:
     """Construct synthesis params using local VoxCPM-oriented env defaults."""
 
@@ -184,7 +192,7 @@ def build_params_from_env(overrides: dict[str, Any] | None = None) -> FishTTSPar
         base["control_prompt"] = control_prompt
     if overrides:
         base.update(overrides)
-    return FishTTSParams(**base)
+    return sanitize_params_for_mode(FishTTSParams(**base))
 
 
 __all__ = [
@@ -195,4 +203,5 @@ __all__ = [
     "VoxCPMClientError",
     "VoxCPMServerError",
     "build_params_from_env",
+    "sanitize_params_for_mode",
 ]

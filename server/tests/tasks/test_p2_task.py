@@ -47,7 +47,10 @@ from server.core.repositories import ChunkRepo, EpisodeRepo
 from server.core.storage import chunk_take_key
 from server.core.voxcpm_client import VoxCPMUnavailableError
 from server.flows.tasks import p2_synth as p2_module
-from server.flows.tasks.p2_synth import run_p2_synth
+from server.flows.tasks.p2_synth import (
+    CHUNK_CONTROL_PROMPT_OVERRIDE_KEY,
+    run_p2_synth,
+)
 
 EP_ID = "ep-test"
 CHUNK_ID = "ep-test:c1"
@@ -384,6 +387,32 @@ async def test_custom_params_dict_is_merged_into_call(seeded, fake_voxcpm):
     # Result params reflect the merged view.
     assert result.params["temperature"] == 0.2
     assert result.params["reference_id"] == "voice-x"
+
+
+async def test_ultimate_cloning_strips_control_prompt_and_chunk_override(
+    seeded, session_factory, fake_voxcpm
+):
+    async with session_factory() as session:
+        chunk = await session.get(Chunk, CHUNK_ID)
+        assert chunk is not None
+        chunk.extra_metadata = {
+            CHUNK_CONTROL_PROMPT_OVERRIDE_KEY: "angry female narration",
+        }
+        await session.commit()
+
+    result = await run_p2_synth(
+        CHUNK_ID,
+        {
+            "prompt_audio_path": "111.m4a",
+            "prompt_text": "hello everyone",
+            "control_prompt": "stale prompt should be ignored",
+        },
+    )
+    _, used_params = fake_voxcpm.calls[-1]
+    assert used_params.prompt_audio_path == "111.m4a"
+    assert used_params.prompt_text == "hello everyone"
+    assert used_params.control_prompt is None
+    assert result.params["control_prompt"] is None
 
 
 async def test_p2_synth_task_decorator_has_voxcpm_tag_and_retries():
