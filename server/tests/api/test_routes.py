@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from server.core.domain import ChunkInput
-from server.core.models import Base
+from server.core.models import Base, Event
 from server.core.repositories import ChunkRepo, EpisodeRepo, EventRepo, StageRunRepo, TakeRepo
 from server.core.domain import EpisodeCreate, TakeAppend
 
@@ -298,6 +299,44 @@ class TestChunkRetry:
             "/episodes/nope/chunks/bad/retry",
         )
         assert resp.status_code == 404
+
+
+class TestManualReviewConfirm:
+    async def test_confirm_review_marks_chunk_verified(self, seeded_client: AsyncClient):
+        global _maker
+        async with _maker() as session:
+            await ChunkRepo(session).set_status("ep-test:shot01:0", "needs_review")
+            await session.commit()
+
+        resp = await seeded_client.post(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/confirm-review",
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"confirmed": True, "status": "verified"}
+
+        resp2 = await seeded_client.get("/episodes/ep-test")
+        chunk = next(item for item in resp2.json()["chunks"] if item["id"] == "ep-test:shot01:0")
+        assert chunk["status"] == "verified"
+
+        async with _maker() as session:
+            stmt = (
+                select(Event)
+                .where(Event.episode_id == "ep-test")
+                .where(Event.chunk_id == "ep-test:shot01:0")
+                .where(Event.kind == "review_reset")
+                .order_by(Event.id.desc())
+            )
+            result = await session.execute(stmt)
+            event = result.scalars().first()
+            assert event is not None
+            assert event.payload["confirmed_manually"] is True
+
+    async def test_confirm_review_rejects_non_review_chunk(self, seeded_client: AsyncClient):
+        resp = await seeded_client.post(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/confirm-review",
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "invalid_state"
 
 
 class TestFinalizeTake:

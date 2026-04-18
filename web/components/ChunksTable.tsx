@@ -21,6 +21,7 @@ interface Props {
   onUseTake?: (cid: string, takeId: string) => void;
   onSynthesize?: (cid: string) => void;
   onQuickRetry?: (cid: string, stage: StageName) => void | Promise<void>;
+  onConfirmReview?: (cid: string) => void | Promise<void>;
   pendingStages?: Record<string, { stage: StageName }>;
   getAudioUrl: (uri: string) => string;
 }
@@ -29,7 +30,7 @@ function isProblemChunk(chunk: Chunk): boolean {
   return (
     chunk.status === "needs_review" ||
     chunk.status === "failed" ||
-    chunk.stageRuns.some((stageRun) => stageRun.status === "failed")
+    (chunk.status !== "verified" && chunk.stageRuns.some((stageRun) => stageRun.status === "failed"))
   );
 }
 
@@ -44,6 +45,7 @@ export function ChunksTable({
   onUseTake,
   onSynthesize,
   onQuickRetry,
+  onConfirmReview,
   pendingStages,
   getAudioUrl,
 }: Props) {
@@ -206,6 +208,7 @@ export function ChunksTable({
                   onUseTake={onUseTake ? (takeId) => onUseTake(chunk.id, takeId) : undefined}
                   onSynthesize={onSynthesize ? () => onSynthesize(chunk.id) : undefined}
                   onQuickRetry={onQuickRetry ? (stage) => onQuickRetry(chunk.id, stage) : undefined}
+                  onConfirmReview={onConfirmReview ? () => onConfirmReview(chunk.id) : undefined}
                   processingStage={pendingStages?.[chunk.id]?.stage ?? null}
                   getAudioUrl={getAudioUrl}
                 />
@@ -227,6 +230,7 @@ interface RowGroupProps {
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
   onQuickRetry?: (stage: StageName) => void | Promise<void>;
+  onConfirmReview?: () => void | Promise<void>;
   processingStage?: StageName | null;
   getAudioUrl: (uri: string) => string;
 }
@@ -240,6 +244,7 @@ const RowGroup = memo(function RowGroup({
   onUseTake,
   onSynthesize,
   onQuickRetry,
+  onConfirmReview,
   processingStage,
   getAudioUrl,
 }: RowGroupProps) {
@@ -259,6 +264,7 @@ const RowGroup = memo(function RowGroup({
         onUseTake={onUseTake}
         onSynthesize={onSynthesize}
         onQuickRetry={onQuickRetry}
+        onConfirmReview={onConfirmReview}
         processingStage={processingStage}
         getAudioUrl={getAudioUrl}
       />

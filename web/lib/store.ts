@@ -59,6 +59,7 @@ interface HarnessState {
   archiveEpisode: (id: string) => Promise<void>;
   updateConfig: (epId: string, config: Record<string, unknown>) => Promise<void>;
   finalizeTake: (epId: string, cid: string, takeId: string) => Promise<void>;
+  confirmChunkReview: (epId: string, cid: string) => Promise<void>;
   previewTake: (audioUri: string) => void;
 }
 
@@ -224,6 +225,10 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
 
   finalizeTake: async (epId, cid, takeId) => {
     await api.finalizeTake(epId, cid, takeId);
+  },
+
+  confirmChunkReview: async (epId, cid) => {
+    await api.confirmChunkReview(epId, cid);
   },
 
   previewTake: (audioUri) => {

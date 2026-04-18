@@ -232,6 +232,32 @@ export async function retryChunk(
   return data!.flowRunId;
 }
 
+export async function confirmChunkReview(
+  epId: string,
+  cid: string,
+): Promise<void> {
+  const res = await fetch(
+    `${getApiUrl()}/episodes/${encodeURIComponent(epId)}/chunks/${encodeURIComponent(cid)}/confirm-review`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: process.env.NEXT_PUBLIC_API_TOKEN
+        ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+        : undefined,
+    },
+  );
+  if (!res.ok) {
+    let detail = `请求失败 (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // ignore parse failure
+    }
+    throw new Error(detail);
+  }
+}
+
 export async function finalizeTake(
   epId: string,
   cid: string,

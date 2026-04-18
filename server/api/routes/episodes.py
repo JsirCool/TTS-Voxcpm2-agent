@@ -109,6 +109,11 @@ class EditResponse(_CamelBase):
     updated: int
 
 
+class ReviewConfirmResponse(_CamelBase):
+    confirmed: bool
+    status: str
+
+
 class DeleteResponse(_CamelBase):
     deleted: bool
 
@@ -917,6 +922,66 @@ async def edit_chunk(
     await session.commit()
 
     return EditResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
+# POST /episodes/{id}/chunks/{cid}/confirm-review
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/episodes/{episode_id}/chunks/{chunk_id}/confirm-review",
+    response_model=ReviewConfirmResponse,
+)
+async def confirm_chunk_review(
+    episode_id: str,
+    chunk_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> ReviewConfirmResponse:
+    ep_repo = EpisodeRepo(session)
+    ep = await ep_repo.get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+    if ep.locked:
+        raise DomainError("invalid_state", f"episode '{episode_id}' is locked")
+
+    chunk_repo = ChunkRepo(session)
+    chunk = await chunk_repo.get(chunk_id)
+    if chunk is None or chunk.episode_id != episode_id:
+        raise DomainError("not_found", f"chunk '{chunk_id}' not found in episode '{episode_id}'")
+
+    if chunk.status == "verified":
+        return ReviewConfirmResponse(confirmed=True, status="verified")
+    if chunk.status != "needs_review":
+        raise DomainError(
+            "invalid_state",
+            f"chunk '{chunk_id}' is not awaiting manual review",
+        )
+
+    await chunk_repo.set_status(chunk_id, "verified")
+
+    chunks = await chunk_repo.list_by_episode(episode_id)
+    has_failed = any(item.id != chunk_id and item.status == "failed" for item in chunks)
+    if ep.status != "running":
+        await ep_repo.set_status(
+            episode_id,
+            "failed" if has_failed else "ready",
+        )
+
+    event_repo = EventRepo(session)
+    await event_repo.write(
+        episode_id=episode_id,
+        chunk_id=chunk_id,
+        kind="review_reset",
+        payload={
+            "previous_status": chunk.status,
+            "status": "verified",
+            "confirmed_manually": True,
+        },
+    )
+    await session.commit()
+
+    return ReviewConfirmResponse(confirmed=True, status="verified")
 
 
 # ---------------------------------------------------------------------------

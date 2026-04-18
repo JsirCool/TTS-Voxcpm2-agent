@@ -65,7 +65,7 @@ export default function Page() {
       ?.stageRuns.find((stageRun) => stageRun.status === "running")?.stage ?? null
     : null;
   const failedCount = episode?.chunks.filter((chunk) =>
-    chunk.status === "failed" || chunk.stageRuns.some((stageRun) => stageRun.status === "failed"),
+    chunk.status === "failed" || (chunk.status !== "verified" && chunk.stageRuns.some((stageRun) => stageRun.status === "failed")),
   ).length ?? 0;
   const reviewCount = episode?.chunks.filter((chunk) => chunk.status === "needs_review").length ?? 0;
   const dirtyCount = store.dirtyCount();
@@ -332,6 +332,16 @@ export default function Page() {
     { errorPrefix: "快捷重跑失败" },
   );
 
+  const [execConfirmReview] = useAction(
+    useCallback(async (cid: string) => {
+      if (!episode) return;
+      await store.confirmChunkReview(episode.id, cid);
+      await mutateDetail();
+      await mutateList();
+    }, [episode, mutateDetail, mutateList, store]),
+    { errorPrefix: "确认复核失败" },
+  );
+
   const [execBatchRetry] = useAction(
     useCallback(async (stage: StageName, chunkIds: string[]) => {
       if (!episode || chunkIds.length === 0) return;
@@ -350,6 +360,20 @@ export default function Page() {
       void mutateList();
     }, [clearPendingStage, confirmAction, episode, markPendingStage, mutateDetail, mutateList, store]),
     { errorPrefix: "批量重跑失败" },
+  );
+
+  const [execBatchConfirmReview] = useAction(
+    useCallback(async (chunkIds: string[]) => {
+      if (!episode || chunkIds.length === 0) return;
+      const ok = await confirmAction(`确认将 ${chunkIds.length} 个 chunk 标记为“已人工复核”吗？确认后它们会从待人工复核里移除。`);
+      if (!ok) return;
+      for (const cid of chunkIds) {
+        await store.confirmChunkReview(episode.id, cid);
+      }
+      await mutateDetail();
+      await mutateList();
+    }, [confirmAction, episode, mutateDetail, mutateList, store]),
+    { errorPrefix: "批量确认复核失败" },
   );
 
   useEffect(() => {
@@ -508,6 +532,7 @@ export default function Page() {
                 filterMode={chunkFilterMode}
                 onFilterModeChange={setChunkFilterMode}
                 onBatchRetry={execBatchRetry}
+                onBatchConfirmReview={execBatchConfirmReview}
                 onApplyStaged={execApply}
               />
 
@@ -540,6 +565,7 @@ export default function Page() {
                       onUseTake={execUseTake}
                       onSynthesize={execSynthesize}
                       onQuickRetry={execQuickRetry}
+                      onConfirmReview={execConfirmReview}
                       pendingStages={pendingChunkStages}
                       getAudioUrl={getAudioUrl}
                     />

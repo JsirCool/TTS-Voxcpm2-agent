@@ -32,6 +32,7 @@ interface Props {
   onUseTake?: (takeId: string) => void;
   onSynthesize?: () => void;
   onQuickRetry?: (stage: StageName) => void | Promise<void>;
+  onConfirmReview?: () => void | Promise<void>;
   processingStage?: StageName | null;
   getAudioUrl: (uri: string) => string;
 }
@@ -118,6 +119,7 @@ export const ChunkRow = memo(function ChunkRow({
   onUseTake,
   onSynthesize,
   onQuickRetry,
+  onConfirmReview,
   processingStage = null,
   getAudioUrl,
 }: Props) {
@@ -201,6 +203,11 @@ export const ChunkRow = memo(function ChunkRow({
   const reviewSuggestion = getReviewSuggestion(chunk);
   const quickRetryStage = getQuickRetryStage(chunk);
   const quickRetryLabel = STAGE_SHORT_LABEL[quickRetryStage];
+  const verifyNeedsReview = chunk.status === "needs_review";
+  const verifyResolvedManually = chunk.status === "verified"
+    && (chunk.verifyDiagnosis?.verdict === "fail" || (chunk.verifyScores?.weightedScore ?? 1) < 0.7);
+  const verifyHasIssue = chunk.status === "failed"
+    || (!verifyResolvedManually && (chunk.verifyDiagnosis?.verdict === "fail" || (chunk.verifyScores?.weightedScore ?? 1) < 0.7));
 
   return (
     <div
@@ -351,15 +358,28 @@ export const ChunkRow = memo(function ChunkRow({
 
         {reviewSuggestion ? (
           <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-            <span className="font-semibold">待人工复核</span>
-            <span className="mx-1">·</span>
-            <span>{chunk.verifyDiagnosis?.detail ?? reviewSuggestion}</span>
-            {chunk.verifyDiagnosis?.detail ? (
-              <>
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <span className="font-semibold">待人工复核</span>
                 <span className="mx-1">·</span>
-                <span>{reviewSuggestion}</span>
-              </>
-            ) : null}
+                <span>{chunk.verifyDiagnosis?.detail ?? reviewSuggestion}</span>
+                {chunk.verifyDiagnosis?.detail ? (
+                  <>
+                    <span className="mx-1">·</span>
+                    <span>{reviewSuggestion}</span>
+                  </>
+                ) : null}
+              </div>
+              {chunk.status === "needs_review" && onConfirmReview ? (
+                <button
+                  type="button"
+                  onClick={onConfirmReview}
+                  className="shrink-0 rounded border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-neutral-900 dark:text-amber-200 dark:hover:bg-amber-950/40"
+                >
+                  人工确认
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
@@ -374,12 +394,16 @@ export const ChunkRow = memo(function ChunkRow({
               </span>
               <span
                 className={`px-1 py-0.5 rounded text-[9px] font-bold ${
-                  chunk.verifyDiagnosis?.verdict === "fail" || chunk.verifyScores.weightedScore < 0.7
-                    ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
-                    : "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
+                  verifyNeedsReview
+                    ? "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+                    : verifyResolvedManually
+                      ? "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300"
+                      : verifyHasIssue
+                        ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300"
+                        : "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300"
                 }`}
               >
-                {chunk.verifyDiagnosis?.verdict === "fail" || chunk.verifyScores.weightedScore < 0.7 ? "待复核" : "通过"}
+                {verifyNeedsReview ? "待复核" : verifyResolvedManually ? "已确认" : verifyHasIssue ? "异常" : "通过"}
               </span>
               {chunk.verifyDiagnosis?.detail ? (
                 <span
@@ -485,5 +509,6 @@ export const ChunkRow = memo(function ChunkRow({
     && prev.onUseTake === next.onUseTake
     && prev.onSynthesize === next.onSynthesize
     && prev.onQuickRetry === next.onQuickRetry
+    && prev.onConfirmReview === next.onConfirmReview
     && prev.getAudioUrl === next.getAudioUrl;
 });

@@ -10,6 +10,7 @@ interface Props {
   filterMode: ChunkFilterMode;
   onFilterModeChange: (mode: ChunkFilterMode) => void;
   onBatchRetry: (stage: StageName, chunkIds: string[]) => void | Promise<void>;
+  onBatchConfirmReview: (chunkIds: string[]) => void | Promise<void>;
   onApplyStaged: () => void | Promise<void>;
 }
 
@@ -17,7 +18,7 @@ function isProblemChunk(chunk: Chunk): boolean {
   return (
     chunk.status === "needs_review" ||
     chunk.status === "failed" ||
-    chunk.stageRuns.some((run) => run.status === "failed")
+    (chunk.status !== "verified" && chunk.stageRuns.some((run) => run.status === "failed"))
   );
 }
 
@@ -44,25 +45,28 @@ export function ReviewWorkbench({
   filterMode,
   onFilterModeChange,
   onBatchRetry,
+  onBatchConfirmReview,
   onApplyStaged,
 }: Props) {
-  const reviewChunks = chunks.filter(isProblemChunk);
-  if (reviewChunks.length === 0 && stagedChunkCount === 0) return null;
+  const problemChunks = chunks.filter(isProblemChunk);
+  const reviewPendingChunks = chunks.filter((chunk) => chunk.status === "needs_review");
+  if (problemChunks.length === 0 && stagedChunkCount === 0) return null;
 
-  const speedCount = reviewChunks.filter((chunk) => chunk.verifyDiagnosis?.type === "speed_anomaly").length;
-  const silenceCount = reviewChunks.filter((chunk) => chunk.verifyDiagnosis?.type === "silence_anomaly").length;
-  const p2Count = countStageFailures(reviewChunks, "p2");
-  const p2vCount = countStageFailures(reviewChunks, "p2v");
-  const p5Count = countStageFailures(reviewChunks, "p5");
-  const reviewChunkIds = reviewChunks.map((chunk) => chunk.id);
-  const todoList = reviewChunks.slice(0, 8);
+  const speedCount = problemChunks.filter((chunk) => chunk.verifyDiagnosis?.type === "speed_anomaly").length;
+  const silenceCount = problemChunks.filter((chunk) => chunk.verifyDiagnosis?.type === "silence_anomaly").length;
+  const p2Count = countStageFailures(problemChunks, "p2");
+  const p2vCount = countStageFailures(problemChunks, "p2v");
+  const p5Count = countStageFailures(problemChunks, "p5");
+  const reviewChunkIds = problemChunks.map((chunk) => chunk.id);
+  const reviewPendingIds = reviewPendingChunks.map((chunk) => chunk.id);
+  const todoList = problemChunks.slice(0, 8);
 
   return (
     <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-700 bg-amber-50/60 dark:bg-amber-950/10 shrink-0">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">异常工作台</div>
         <span className="rounded-full border border-amber-200 bg-white px-2 py-0.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-neutral-900 dark:text-amber-300">
-          待处理 {reviewChunks.length}
+          待处理 {problemChunks.length}
         </span>
         {stagedChunkCount > 0 ? (
           <span className="rounded-full border border-blue-200 bg-white px-2 py-0.5 text-xs text-blue-700 dark:border-blue-800 dark:bg-neutral-900 dark:text-blue-300">
@@ -87,6 +91,15 @@ export function ReviewWorkbench({
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
+        {reviewPendingIds.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => onBatchConfirmReview(reviewPendingIds)}
+            className="rounded bg-amber-600 px-3 py-1.5 text-xs text-white hover:bg-amber-500 dark:bg-amber-500 dark:text-neutral-900 dark:hover:bg-amber-400"
+          >
+            批量确认复核
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => onBatchRetry("p2", reviewChunkIds)}
@@ -136,6 +149,15 @@ export function ReviewWorkbench({
                 >
                   配音
                 </button>
+                {chunk.status === "needs_review" ? (
+                  <button
+                    type="button"
+                    onClick={() => onBatchConfirmReview([chunk.id])}
+                    className="rounded border border-amber-300 px-2 py-0.5 text-[10px] text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                  >
+                    确认复核
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => onBatchRetry("p2v", [chunk.id])}
