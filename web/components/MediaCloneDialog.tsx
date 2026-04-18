@@ -40,6 +40,8 @@ interface Props {
   onApplied?: () => void;
 }
 
+const ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS = 8;
+
 const ACCEPTED_MEDIA_TYPES =
   "video/mp4,video/quicktime,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a";
 
@@ -158,6 +160,7 @@ export function MediaCloneDialog({
 }: Props) {
   const mediaRef = useRef<HTMLMediaElement | null>(null);
   const cueRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const autoDowngradedSubtitleSourceRef = useRef<string | null>(null);
 
   const [sourceMode, setSourceMode] = useState<MediaSourceMode>("local_file");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -207,6 +210,12 @@ export function MediaCloneDialog({
     () => joinCueText(selectedCues, subtitleResult?.language ?? "zh"),
     [selectedCues, subtitleResult?.language],
   );
+  const parsedStartS = Number(startS);
+  const parsedEndS = Number(endS);
+  const selectedDuration = useMemo(() => {
+    if (!Number.isFinite(parsedStartS) || !Number.isFinite(parsedEndS)) return 0;
+    return Math.max(0, parsedEndS - parsedStartS);
+  }, [parsedEndS, parsedStartS]);
 
   const activeCueId = useMemo(() => {
     const activeCue = subtitleCues.find(
@@ -215,8 +224,6 @@ export function MediaCloneDialog({
     return activeCue?.id ?? null;
   }, [currentTime, subtitleCues]);
 
-  const parsedStartS = Number(startS);
-  const parsedEndS = Number(endS);
   const hasSource = Boolean(selectedFile) || Boolean(sourceRelativePath);
   const canProcess = hasSource
     && Boolean(assetName.trim())
@@ -313,6 +320,27 @@ export function MediaCloneDialog({
       })
       .finally(() => setResolvingSubtitles(false));
   }, [hasSource, selectedFile, sourceRelativePath]);
+
+  useEffect(() => {
+    if (!subtitleResult) {
+      autoDowngradedSubtitleSourceRef.current = null;
+      return;
+    }
+    if (subtitleResult.sourceType !== "whisperx_generated") {
+      autoDowngradedSubtitleSourceRef.current = null;
+      return;
+    }
+    if (
+      applyMode === "ultimate_cloning"
+      && autoDowngradedSubtitleSourceRef.current !== subtitleResult.sourceType
+    ) {
+      autoDowngradedSubtitleSourceRef.current = subtitleResult.sourceType;
+      setApplyMode("controllable_cloning");
+      toast.warning("当前字幕来自 WhisperX 自动转写，已先切回可控克隆", {
+        description: "极致克隆更依赖精确 prompt_text。若继续使用极致克隆，建议改选更短、更准确的样本。",
+      });
+    }
+  }, [applyMode, subtitleResult]);
 
   useEffect(() => {
     if (!selectedText) return;
@@ -423,6 +451,12 @@ export function MediaCloneDialog({
 
   const handleProcess = async () => {
     if (!canProcess) return;
+    if (applyMode === "ultimate_cloning" && selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
+      toast.error("当前样本过长，不建议直接用于极致克隆", {
+        description: `极致克隆更适合 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内的精确短样本。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再试，或改用可控克隆。`,
+      });
+      return;
+    }
     setProcessing(true);
     try {
       const processed = await processCloneMedia({
@@ -460,6 +494,12 @@ export function MediaCloneDialog({
     if (!processResult) return;
     if (applyMode === "ultimate_cloning" && !promptText.trim()) {
       toast.error("极致克隆需要 prompt_text，请先确认字幕文本");
+      return;
+    }
+    if (applyMode === "ultimate_cloning" && selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
+      toast.error("当前样本过长，不建议直接套用到整集", {
+        description: `极致克隆更适合 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内的精确短样本。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再套用，或改用可控克隆。`,
+      });
       return;
     }
 
@@ -820,6 +860,18 @@ export function MediaCloneDialog({
                     onClick={() => setApplyMode("ultimate_cloning")}
                   />
                 </div>
+                {applyMode === "ultimate_cloning" ? (
+                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                    <div>极致克隆更适合精确、短时的样本。</div>
+                    <div>当前选段时长：{selectedDuration > 0 ? `${selectedDuration.toFixed(2)} 秒` : "未选择"}。</div>
+                    {subtitleResult?.sourceType === "whisperx_generated" ? (
+                      <div>当前字幕来自 WhisperX 自动转写，文本与音频只要有细微偏差，就更容易让生成内容跑偏。</div>
+                    ) : null}
+                    {selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS ? (
+                      <div>当前样本超过 {ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒，建议缩短后再用极致克隆，或改用可控克隆。</div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
 

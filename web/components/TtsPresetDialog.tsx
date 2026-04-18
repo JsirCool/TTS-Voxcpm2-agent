@@ -26,6 +26,31 @@ function describeImportError(error: unknown): string {
   return message;
 }
 
+function extractVoiceProfile(config: Record<string, unknown>) {
+  return {
+    control_prompt: String(config.control_prompt ?? "").trim(),
+    reference_audio_path: String(config.reference_audio_path ?? "").trim(),
+    prompt_audio_path: String(config.prompt_audio_path ?? "").trim(),
+    prompt_text: String(config.prompt_text ?? "").trim(),
+  };
+}
+
+function hasVoiceProfile(config: Record<string, unknown>): boolean {
+  const voice = extractVoiceProfile(config);
+  return Boolean(
+    voice.control_prompt
+      || voice.reference_audio_path
+      || voice.prompt_audio_path
+      || voice.prompt_text,
+  );
+}
+
+function sameVoiceProfile(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const left = extractVoiceProfile(a);
+  const right = extractVoiceProfile(b);
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export function TtsPresetDialog({ open, onClose, currentConfig, onApplyPreset }: Props) {
   const {
     projectPresets,
@@ -161,7 +186,19 @@ export function TtsPresetDialog({ open, onClose, currentConfig, onApplyPreset }:
                 <button
                   type="button"
                   onClick={async () => {
-                    await onApplyPreset(sanitizeTtsConfig(preset.config));
+                    const nextConfig = sanitizeTtsConfig(preset.config);
+                    const willReplaceVoice =
+                      hasVoiceProfile(nextConfig)
+                      && hasVoiceProfile(currentSnapshot)
+                      && !sameVoiceProfile(nextConfig, currentSnapshot);
+                    if (willReplaceVoice) {
+                      const accepted = await confirmAction("确认用这个预设覆盖当前声音素材吗？", {
+                        description: `“${preset.name}”里包含 prompt/reference/control 等声音字段，套用后会替换当前 Episode 里正在使用的声音来源，而不只是改运行参数。`,
+                        confirmLabel: "继续套用",
+                      });
+                      if (!accepted) return;
+                    }
+                    await onApplyPreset(nextConfig);
                     toast.success(`已把“${preset.name}”套用到当前 Episode`);
                   }}
                   className="rounded bg-neutral-900 px-3 py-1 text-xs text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
