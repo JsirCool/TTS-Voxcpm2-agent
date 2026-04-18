@@ -243,9 +243,9 @@ export function TtsConfigBar({
           type="button"
           onClick={() => setMediaDialogOpen(true)}
           className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-white dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:bg-neutral-700"
-          title="浠? mp4 鎴栭煶棰戠墖娈电敓鎴愬厠闅嗙礌鏉?"
+          title="从 mp4 或音频片段生成克隆素材"
         >
-          绱犳潗澶勭悊
+          素材处理
         </button>
         <button
           type="button"
