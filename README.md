@@ -417,6 +417,34 @@ cd ..\web
 pnpm exec tsc --noEmit
 ```
 
+## Bilibili Import / B 站链接导入
+
+You can now open `素材处理` next to `TTS 配置` and choose either:
+
+- `本地文件`
+- `B 站链接`
+
+When using a Bilibili link, the dialog supports:
+
+- pasting a public `bilibili.com/video/BV...`, `.../av...`, or `b23.tv/...` link
+- choosing `下载视频` or `仅下载音频`
+- downloading the source into `voice_sourse/imported/bilibili/...`
+- previewing and trimming the downloaded media in the same dialog
+- continuing through the existing cleanup, WhisperX transcript, and Episode apply flow
+
+Current v1 limitations:
+
+- public videos only
+- no login cookies
+- no VIP / paid / protected content
+- no batch playlists or multi-video collections
+
+Implementation note:
+
+- This repository now includes a minimal adapted subset of logic derived from `Bili23 Downloader`
+- See `third_party/bili23/NOTICE.md`
+- The repository license is now GPL-3.0 compatible because of this source integration
+
 ## License
 
-MIT
+GPL-3.0

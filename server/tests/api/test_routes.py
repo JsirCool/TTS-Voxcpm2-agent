@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from server.core.domain import ChunkInput
+from server.core.bilibili_import import BilibiliImportResult
 from server.core.models import Base, Event
 from server.core.media_processing import MediaProcessResult, MediaToolStatus
 from server.core.repositories import ChunkRepo, EpisodeRepo, EventRepo, StageRunRepo, TakeRepo
@@ -311,6 +312,7 @@ class TestMediaRoutes:
         monkeypatch.setattr(media_routes, "ffprobe_status", lambda: MediaToolStatus(True, "ffprobe"))
         monkeypatch.setattr(media_routes, "demucs_status", lambda: MediaToolStatus(False, "missing demucs"))
         monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(media_routes, "bilibili_status", lambda: True)
 
         resp = await client.get("/media/capabilities")
         assert resp.status_code == 200
@@ -319,7 +321,59 @@ class TestMediaRoutes:
         assert data["ffprobe"] is True
         assert data["demucs"] is False
         assert data["whisperx"] is True
+        assert data["bilibiliEnabled"] is True
+        assert data["bilibiliPublicOnly"] is True
+        assert data["bilibiliLoginSupported"] is False
         assert data["demucsError"] == "missing demucs"
+
+    async def test_import_bilibili_media_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(
+            media_routes,
+            "import_bilibili_media",
+            lambda url, download_target: BilibiliImportResult(
+                absolute_path=Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\video\p01.mp4"),
+                relative_source_path="imported/bilibili/BV1/video/p01.mp4",
+                media_type="video",
+                title="Demo title",
+                owner="Demo UP",
+                duration_s=18.5,
+                download_target=download_target,
+            ),
+        )
+
+        resp = await client.post(
+            "/media/import/bilibili",
+            json={
+                "url": "https://www.bilibili.com/video/BV1Rs411x7qR",
+                "downloadTarget": "video",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "sourceRelativePath": "imported/bilibili/BV1/video/p01.mp4",
+            "previewUrl": "/media/source?path=imported%2Fbilibili%2FBV1%2Fvideo%2Fp01.mp4",
+            "mediaType": "video",
+            "title": "Demo title",
+            "owner": "Demo UP",
+            "durationS": 18.5,
+            "downloadTarget": "video",
+        }
+
+    async def test_media_source_streams_imported_file(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        from server.api.routes import media as media_routes
+
+        source = tmp_path / "clip.wav"
+        source.write_bytes(b"RIFFdemo")
+
+        monkeypatch.setattr(media_routes, "resolve_imported_source_path", lambda path: source)
+        monkeypatch.setattr(media_routes, "guess_media_type", lambda path: "audio/wav")
+
+        resp = await client.get("/media/source", params={"path": "imported/demo/clip.wav"})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/wav")
+        assert resp.content == b"RIFFdemo"
 
     async def test_media_process_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
         from server.api.routes import media as media_routes
@@ -359,6 +413,57 @@ class TestMediaRoutes:
             "applyMode": "ultimate_cloning",
             "detectedText": "hello everyone",
         }
+
+    async def test_media_process_supports_server_side_source(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(media_routes, "resolve_imported_source_path", lambda path: imported_source)
+        process_mock = AsyncMock(
+            return_value=(
+                MediaProcessResult(
+                    absolute_path=Path(r"E:\VC\voice_sourse\imported\demo\clip.wav"),
+                    relative_audio_path="imported/demo/clip.wav",
+                    duration_s=2.4,
+                    cleanup_mode="light",
+                ),
+                "detected transcript",
+            )
+        )
+        monkeypatch.setattr(media_routes, "process_media_with_optional_transcript", process_mock)
+
+        resp = await client.post(
+            "/media/process",
+            data={
+                "source_relative_path": "imported/bilibili/BV1/audio/p01.wav",
+                "start_s": "0",
+                "end_s": "2.4",
+                "cleanup_mode": "light",
+                "apply_mode": "ultimate_cloning",
+            },
+        )
+
+        assert resp.status_code == 200
+        process_mock.assert_awaited_once()
+        args = process_mock.await_args.args
+        assert args[0] == imported_source
+        assert args[1] == "p01.wav"
+
+    async def test_media_process_rejects_dual_source_input(self, client: AsyncClient):
+        resp = await client.post(
+            "/media/process",
+            data={
+                "source_relative_path": "imported/demo/clip.wav",
+                "start_s": "0",
+                "end_s": "2.4",
+                "cleanup_mode": "light",
+                "apply_mode": "controllable_cloning",
+            },
+            files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid_input"
 
     async def test_media_process_rejects_when_whisperx_unavailable(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
         from server.api.routes import media as media_routes

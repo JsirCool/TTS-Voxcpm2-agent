@@ -6,12 +6,17 @@ import { sanitizeTtsConfig } from "./tts-presets";
 
 export type MediaCleanupMode = "light" | "vocal_isolate";
 export type MediaApplyMode = "controllable_cloning" | "ultimate_cloning";
+export type MediaSourceMode = "local_file" | "bilibili_link";
+export type BilibiliDownloadTarget = "video" | "audio";
 
 export interface MediaCapabilities {
   ffmpeg: boolean;
   ffprobe: boolean;
   demucs: boolean;
   whisperx: boolean;
+  bilibiliEnabled: boolean;
+  bilibiliPublicOnly: boolean;
+  bilibiliLoginSupported: boolean;
   ffmpegError?: string | null;
   ffprobeError?: string | null;
   demucsError?: string | null;
@@ -25,6 +30,16 @@ export interface MediaProcessResult {
   cleanupMode: MediaCleanupMode;
   applyMode: MediaApplyMode;
   detectedText?: string | null;
+}
+
+export interface BilibiliImportResult {
+  sourceRelativePath: string;
+  previewUrl: string;
+  mediaType: "video" | "audio";
+  title: string;
+  owner?: string | null;
+  durationS: number;
+  downloadTarget: BilibiliDownloadTarget;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -47,14 +62,20 @@ export async function fetchMediaCapabilities(): Promise<MediaCapabilities> {
 }
 
 export async function processCloneMedia(input: {
-  file: File;
+  file?: File | null;
+  sourceRelativePath?: string | null;
   startS: number;
   endS: number;
   cleanupMode: MediaCleanupMode;
   applyMode: MediaApplyMode;
 }): Promise<MediaProcessResult> {
   const form = new FormData();
-  form.append("media", input.file);
+  if (input.file) {
+    form.append("media", input.file);
+  }
+  if (input.sourceRelativePath) {
+    form.append("source_relative_path", input.sourceRelativePath);
+  }
   form.append("start_s", String(input.startS));
   form.append("end_s", String(input.endS));
   form.append("cleanup_mode", input.cleanupMode);
@@ -69,6 +90,36 @@ export async function processCloneMedia(input: {
     body: form,
   });
   return parseJsonResponse<MediaProcessResult>(response);
+}
+
+export async function importBilibiliMedia(input: {
+  url: string;
+  downloadTarget: BilibiliDownloadTarget;
+}): Promise<BilibiliImportResult> {
+  const response = await fetch(`${getApiUrl()}/media/import/bilibili`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(process.env.NEXT_PUBLIC_API_TOKEN
+        ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+        : {}),
+    },
+    body: JSON.stringify({
+      url: input.url,
+      downloadTarget: input.downloadTarget,
+    }),
+  });
+  return parseJsonResponse<BilibiliImportResult>(response);
+}
+
+export function buildMediaPreviewUrl(previewUrl: string): string {
+  if (!previewUrl) return "";
+  if (/^https?:\/\//i.test(previewUrl)) return previewUrl;
+  if (previewUrl.startsWith("/")) {
+    return `${getApiUrl()}${previewUrl}`;
+  }
+  return `${getApiUrl()}/${previewUrl}`;
 }
 
 export function getDefaultMediaApplyMode(config: Record<string, unknown>): MediaApplyMode {

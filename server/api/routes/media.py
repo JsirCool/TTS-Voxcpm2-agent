@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import asyncio
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi.responses import FileResponse
 
 from server.core.domain import DomainError, _CamelBase
+from server.core.bilibili_import import (
+    BilibiliDownloadTarget,
+    bilibili_status,
+    build_preview_url,
+    guess_media_type,
+    import_bilibili_media,
+    import_bilibili_media_via_subprocess,
+    resolve_imported_source_path,
+)
 from server.core.media_processing import (
     ApplyMode,
     CleanupMode,
@@ -29,6 +42,9 @@ class MediaCapabilitiesResponse(_CamelBase):
     ffprobe: bool
     demucs: bool
     whisperx: bool
+    bilibili_enabled: bool
+    bilibili_public_only: bool
+    bilibili_login_supported: bool
     ffmpeg_error: str | None = None
     ffprobe_error: str | None = None
     demucs_error: str | None = None
@@ -42,6 +58,21 @@ class MediaProcessResponse(_CamelBase):
     cleanup_mode: CleanupMode
     apply_mode: ApplyMode
     detected_text: str | None = None
+
+
+class BilibiliImportRequest(_CamelBase):
+    url: str
+    download_target: BilibiliDownloadTarget
+
+
+class BilibiliImportResponse(_CamelBase):
+    source_relative_path: str
+    preview_url: str
+    media_type: Literal["video", "audio"]
+    title: str
+    owner: str | None = None
+    duration_s: float
+    download_target: BilibiliDownloadTarget
 
 
 async def _probe_whisperx(url: str) -> tuple[bool, str | None]:
@@ -68,6 +99,9 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
         ffprobe=ffprobe.available,
         demucs=demucs.available,
         whisperx=whisperx_ok,
+        bilibili_enabled=bilibili_status(),
+        bilibili_public_only=True,
+        bilibili_login_supported=False,
         ffmpeg_error=None if ffmpeg.available else ffmpeg.detail,
         ffprobe_error=None if ffprobe.available else ffprobe.detail,
         demucs_error=None if demucs.available else demucs.detail,
@@ -76,16 +110,54 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
     )
 
 
+@router.post("/media/import/bilibili", response_model=BilibiliImportResponse)
+async def import_bilibili_media_route(payload: BilibiliImportRequest) -> BilibiliImportResponse:
+    try:
+        result = await asyncio.to_thread(
+            import_bilibili_media,
+            payload.url,
+            download_target=payload.download_target,
+        )
+    except DomainError as exc:
+        if exc.code != "bilibili_unavailable":
+            raise
+        result = await asyncio.to_thread(
+            import_bilibili_media_via_subprocess,
+            payload.url,
+            download_target=payload.download_target,
+        )
+    return BilibiliImportResponse(
+        source_relative_path=result.relative_source_path,
+        preview_url=build_preview_url(result.relative_source_path),
+        media_type=result.media_type,
+        title=result.title,
+        owner=result.owner,
+        duration_s=result.duration_s,
+        download_target=result.download_target,
+    )
+
+
+@router.get("/media/source")
+async def get_media_source(path: str = Query(..., min_length=1)) -> FileResponse:
+    source_path = resolve_imported_source_path(path)
+    return FileResponse(
+        source_path,
+        media_type=guess_media_type(source_path),
+        filename=source_path.name,
+    )
+
+
 @router.post("/media/process", response_model=MediaProcessResponse)
 async def process_media(
-    media: UploadFile = File(...),
+    media: UploadFile | None = File(None),
+    source_relative_path: str | None = Form(None),
     start_s: float = Form(...),
     end_s: float = Form(...),
     cleanup_mode: Literal["light", "vocal_isolate"] = Form(...),
     apply_mode: Literal["controllable_cloning", "ultimate_cloning"] = Form(...),
 ) -> MediaProcessResponse:
-    filename = media.filename or "clip"
-    suffix = Path(filename).suffix or ".bin"
+    if bool(media) == bool(source_relative_path):
+        raise DomainError("invalid_input", "media 和 source_relative_path 必须二选一")
 
     if apply_mode == "ultimate_cloning":
         whisperx_ok, whisperx_error = await _probe_whisperx(DEFAULT_WHISPERX_URL)
@@ -95,25 +167,41 @@ async def process_media(
                 whisperx_error or "WhisperX is not ready, unable to generate prompt_text automatically",
             )
 
-    with tempfile.NamedTemporaryFile(prefix="tts-media-upload-", suffix=suffix, delete=False) as temp:
-        temp_path = Path(temp.name)
-        temp.write(await media.read())
-
-    try:
+    if source_relative_path:
+        source_path = resolve_imported_source_path(source_relative_path)
         result, detected_text = await process_media_with_optional_transcript(
-            temp_path,
-            filename,
+            source_path,
+            source_path.name,
             start_s=start_s,
             end_s=end_s,
             cleanup_mode=cleanup_mode,
             apply_mode=apply_mode,
             whisperx_url=DEFAULT_WHISPERX_URL,
         )
-    finally:
+    else:
+        assert media is not None
+        filename = media.filename or "clip"
+        suffix = Path(filename).suffix or ".bin"
+
+        with tempfile.NamedTemporaryFile(prefix="tts-media-upload-", suffix=suffix, delete=False) as temp:
+            temp_path = Path(temp.name)
+            temp.write(await media.read())
+
         try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+            result, detected_text = await process_media_with_optional_transcript(
+                temp_path,
+                filename,
+                start_s=start_s,
+                end_s=end_s,
+                cleanup_mode=cleanup_mode,
+                apply_mode=apply_mode,
+                whisperx_url=DEFAULT_WHISPERX_URL,
+            )
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     return MediaProcessResponse(
         relative_audio_path=result.relative_audio_path,

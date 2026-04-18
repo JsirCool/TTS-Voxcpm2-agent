@@ -8,6 +8,8 @@ title tts-harness API
 cd /d "%ROOT%"
 
 set "ALL_PROXY="
+set "HTTP_PROXY="
+set "HTTPS_PROXY="
 
 echo Starting API on http://127.0.0.1:%API_PORT%
 "%VENV_PY%" -m uvicorn server.api.main:app --host 127.0.0.1 --port %API_PORT% --env-file "%ROOT%\.env"

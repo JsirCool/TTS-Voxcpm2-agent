@@ -308,3 +308,42 @@ If needed, stop everything first and start again:
 cmd /c E:\VC\tts-agent-harness\stop-local-stack.bat
 cmd /k E:\VC\tts-agent-harness\start-local-stack.bat
 ```
+
+## 15. Bilibili Import / B 站链接导入
+
+`素材处理` 弹窗现在支持两种来源：
+
+- `本地文件`
+- `B 站链接`
+
+使用 `B 站链接` 时：
+
+1. 粘贴公开视频链接
+2. 选择 `下载视频` 或 `仅下载音频`
+3. 点击 `解析并下载`
+4. 下载完成后直接在同一弹窗里预览、裁剪并继续后续处理
+
+Supported link shapes:
+
+- `https://www.bilibili.com/video/BV...`
+- `https://www.bilibili.com/video/av...`
+- `https://b23.tv/...`
+
+Current limitations:
+
+- public videos only
+- no login cookies
+- no VIP / paid / protected content
+- no batch playlists or collections
+
+Downloaded Bilibili media is cached under:
+
+```text
+E:\VC\voice_sourse\imported\bilibili
+```
+
+The final processed clone source still goes through the normal pipeline and is written under:
+
+```text
+E:\VC\voice_sourse\imported
+```
