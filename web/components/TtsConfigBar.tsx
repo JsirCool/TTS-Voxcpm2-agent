@@ -16,6 +16,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { MediaCloneDialog } from "./MediaCloneDialog";
 import { TtsPresetDialog } from "./TtsPresetDialog";
 
 interface Props {
@@ -195,6 +196,7 @@ export function TtsConfigBar({
   onUpdateConfig,
 }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
   const [savedHint, setSavedHint] = useState(false);
 
@@ -237,6 +239,14 @@ export function TtsConfigBar({
         {mode !== "voice_design"
           ? field("denoise", Boolean(config.denoise ?? false) ? "on" : "off")
           : null}
+        <button
+          type="button"
+          onClick={() => setMediaDialogOpen(true)}
+          className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-white dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:bg-neutral-700"
+          title="浠? mp4 鎴栭煶棰戠墖娈电敓鎴愬厠闅嗙礌鏉?"
+        >
+          绱犳潗澶勭悊
+        </button>
         <button
           type="button"
           onClick={() => setPresetDialogOpen(true)}
@@ -292,6 +302,23 @@ export function TtsConfigBar({
         currentConfig={config}
         onApplyPreset={async (nextConfig) => {
           await onUpdateConfig(episodeId, nextConfig);
+          onConfigSaved?.();
+          setSavedHint(true);
+          setTimeout(() => setSavedHint(false), 6000);
+        }}
+      />
+
+      <MediaCloneDialog
+        open={mediaDialogOpen}
+        onClose={() => setMediaDialogOpen(false)}
+        currentConfig={config}
+        onApplyConfig={async (nextConfig) => {
+          await onUpdateConfig(episodeId, nextConfig);
+          onConfigSaved?.();
+          setSavedHint(true);
+          setTimeout(() => setSavedHint(false), 6000);
+        }}
+        onApplied={() => {
           onConfigSaved?.();
           setSavedHint(true);
           setTimeout(() => setSavedHint(false), 6000);

@@ -155,6 +155,52 @@ E:\VC\voice_sourse\111.m4a
 
 Note: the directory name is intentionally kept as `voice_sourse` for compatibility with the current implementation and existing data.
 
+## 视频/音频转克隆素材 / Video Or Audio To Clone Source
+
+现在可以直接在前端 `TTS 配置` 旁边打开 `素材处理` 弹窗，把本地 `mp4 / mov / mkv / mp3 / wav / m4a` 片段裁剪成可用于 VoxCPM 的克隆素材。
+You can now open the `素材处理` dialog next to `TTS 配置` and turn a local `mp4 / mov / mkv / mp3 / wav / m4a` clip into a VoxCPM-ready clone source.
+
+第一版支持两档处理：
+The first version supports two cleanup levels:
+
+- `轻量稳定 / light`
+  - 只依赖 `ffmpeg` / `ffprobe`
+  - 裁剪片段、抽取音频、单声道、重采样、响度规范、轻降噪
+- `重度人声分离 / vocal_isolate`
+  - 额外依赖本地 `Demucs`
+  - 先做人声分离，再输出更干净的参考片段
+
+输出规则固定为：
+Output rules:
+
+- 内部标准输出始终是 `WAV`
+- 输出目录始终在 `voice_sourse/imported/`
+- 文件名会包含时间戳、裁剪区间和清理模式，避免覆盖旧素材
+
+套用到当前 Episode 时：
+When you apply the processed clip to the current Episode:
+
+- `可控克隆 / controllable_cloning`
+  - 写入 `reference_audio_path`
+  - 自动清掉 `prompt_audio_path` 和 `prompt_text`
+- `极致克隆 / ultimate_cloning`
+  - 写入 `prompt_audio_path` 和自动生成的 `prompt_text`
+  - 自动清掉 `reference_audio_path` 和 `control_prompt`
+
+自动转写说明：
+Automatic transcription notes:
+
+- `极致克隆` 会调用本地 `WhisperX` 生成 `prompt_text`
+- 生成后会先在弹窗里展示，你可以手工编辑确认后再套用
+- 如果 `WhisperX` 不可用，前端会禁用 `极致克隆` 套用模式
+
+依赖要求：
+Dependencies:
+
+- 基础版必须有：`ffmpeg`、`ffprobe`
+- 重度分离额外需要：`Demucs`
+- 自动生成 `prompt_text` 需要：本地 `WhisperX` 服务可用
+
 ## 最短启动步骤 / Shortest Startup Path
 
 如果你是 Windows 用户，最短启动步骤如下：

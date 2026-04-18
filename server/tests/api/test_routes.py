@@ -10,6 +10,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 
 from server.core.domain import ChunkInput
 from server.core.models import Base, Event
+from server.core.media_processing import MediaProcessResult, MediaToolStatus
 from server.core.repositories import ChunkRepo, EpisodeRepo, EventRepo, StageRunRepo, TakeRepo
 from server.core.domain import EpisodeCreate, TakeAppend
 
@@ -299,6 +301,82 @@ class TestChunkRetry:
             "/episodes/nope/chunks/bad/retry",
         )
         assert resp.status_code == 404
+
+
+class TestMediaRoutes:
+    async def test_media_capabilities(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(media_routes, "ffmpeg_status", lambda: MediaToolStatus(True, "ffmpeg"))
+        monkeypatch.setattr(media_routes, "ffprobe_status", lambda: MediaToolStatus(True, "ffprobe"))
+        monkeypatch.setattr(media_routes, "demucs_status", lambda: MediaToolStatus(False, "missing demucs"))
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+
+        resp = await client.get("/media/capabilities")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg"] is True
+        assert data["ffprobe"] is True
+        assert data["demucs"] is False
+        assert data["whisperx"] is True
+        assert data["demucsError"] == "missing demucs"
+
+    async def test_media_process_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(
+            media_routes,
+            "process_media_with_optional_transcript",
+            AsyncMock(
+                return_value=(
+                    MediaProcessResult(
+                        absolute_path=Path(r"E:\VC\voice_sourse\imported\demo\clip.wav"),
+                        relative_audio_path="imported/demo/clip.wav",
+                        duration_s=2.4,
+                        cleanup_mode="light",
+                    ),
+                    "hello everyone",
+                )
+            ),
+        )
+
+        resp = await client.post(
+            "/media/process",
+            data={
+                "start_s": "0",
+                "end_s": "2.4",
+                "cleanup_mode": "light",
+                "apply_mode": "ultimate_cloning",
+            },
+            files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "relativeAudioPath": "imported/demo/clip.wav",
+            "durationS": 2.4,
+            "cleanupMode": "light",
+            "applyMode": "ultimate_cloning",
+            "detectedText": "hello everyone",
+        }
+
+    async def test_media_process_rejects_when_whisperx_unavailable(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(False, "WhisperX loading")))
+
+        resp = await client.post(
+            "/media/process",
+            data={
+                "start_s": "0",
+                "end_s": "2.4",
+                "cleanup_mode": "light",
+                "apply_mode": "ultimate_cloning",
+            },
+            files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "whisperx_unavailable"
 
 
 class TestManualReviewConfirm:

@@ -202,7 +202,44 @@ Use relative paths in the config, for example:
 speakers\host-a.wav
 ```
 
-## 12. 首次启动注意事项 / First-Run Notes
+## 12. 视频/音频转克隆素材 / Video Or Audio To Clone Source
+
+前端现在新增了 `素材处理` 弹窗，入口就在 `TTS 配置` 旁边。
+The Web UI now includes a `素材处理` dialog next to `TTS 配置`.
+
+它支持导入：
+Supported local inputs:
+
+- `mp4`
+- `mov`
+- `mkv`
+- `mp3`
+- `wav`
+- `m4a`
+
+你可以在弹窗里完成：
+Inside the dialog you can:
+
+- 预览本地视频或音频
+- 选择开始和结束时间
+- 选择 `轻量稳定` 或 `重度人声分离`
+- 选择套用到 `可控克隆` 或 `极致克隆`
+
+依赖说明：
+Dependencies:
+
+- 基础处理必须有：`ffmpeg` 和 `ffprobe`
+- `重度人声分离` 额外需要：本地 `Demucs`
+- `极致克隆` 自动生成 `prompt_text` 还需要：本地 `WhisperX` 正常可用
+
+输出说明：
+Output behavior:
+
+- 输出始终为 `WAV`
+- 文件会写到 `voice_sourse/imported/`
+- 套用到当前 Episode 时会自动做模式互斥，不会把旧字段叠进去
+
+## 13. 首次启动注意事项 / First-Run Notes
 
 - WhisperX 第一次加载模型时，可能需要 `10-60` 秒。
 - Web 依赖安装当前默认使用 `pnpm`。
@@ -214,7 +251,7 @@ speakers\host-a.wav
 - If the Web app does not open, first check whether `http://localhost:3010` is reachable.
 - If a port is already in use, run the stop script and try again.
 
-## 13. 常见问题 / Common Problems
+## 14. 常见问题 / Common Problems
 
 ### 找不到 Python / Missing Python
 
