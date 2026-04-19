@@ -40,7 +40,8 @@ interface Props {
   onApplied?: () => void;
 }
 
-const ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS = 8;
+const ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS = 15;
+const ULTIMATE_CLONING_HARD_MAX_SECONDS = 40;
 
 type ApiError = Error & { code?: string; status?: number };
 
@@ -480,11 +481,18 @@ export function MediaCloneDialog({
 
   const handleProcess = async () => {
     if (!canProcess) return;
-    if (applyMode === "ultimate_cloning" && selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
-      toast.error("当前样本过长，不建议直接用于极致克隆", {
-        description: `极致克隆更适合 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内的精确短样本。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再试，或改用可控克隆。`,
-      });
-      return;
+    if (applyMode === "ultimate_cloning") {
+      if (selectedDuration > ULTIMATE_CLONING_HARD_MAX_SECONDS) {
+        toast.error("当前样本过长，已超过极致克隆建议上限", {
+          description: `极致克隆建议控制在 ${ULTIMATE_CLONING_HARD_MAX_SECONDS} 秒以内。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再试，或改用可控克隆。`,
+        });
+        return;
+      }
+      if (selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
+        toast.warning("当前样本偏长，极致克隆可能更容易跑偏", {
+          description: `极致克隆的推荐样本时长是 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内。当前选段 ${selectedDuration.toFixed(2)} 秒，仍可继续处理，但建议优先缩短样本，确保音频与 prompt_text 精确对齐。`,
+        });
+      }
     }
     setProcessing(true);
     try {
@@ -525,11 +533,18 @@ export function MediaCloneDialog({
       toast.error("极致克隆需要 prompt_text，请先确认字幕文本");
       return;
     }
-    if (applyMode === "ultimate_cloning" && selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
-      toast.error("当前样本过长，不建议直接套用到整集", {
-        description: `极致克隆更适合 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内的精确短样本。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再套用，或改用可控克隆。`,
-      });
-      return;
+    if (applyMode === "ultimate_cloning") {
+      if (selectedDuration > ULTIMATE_CLONING_HARD_MAX_SECONDS) {
+        toast.error("当前样本过长，不能直接套用到整集", {
+          description: `极致克隆建议控制在 ${ULTIMATE_CLONING_HARD_MAX_SECONDS} 秒以内。当前选段 ${selectedDuration.toFixed(2)} 秒，建议缩短后再套用，或改用可控克隆。`,
+        });
+        return;
+      }
+      if (selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS) {
+        toast.warning("当前样本偏长，套用后可能增加跑偏风险", {
+          description: `极致克隆的推荐样本时长是 ${ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒以内。当前选段 ${selectedDuration.toFixed(2)} 秒，仍可继续套用，但建议先听处理后素材和固定试配音，确认效果稳定。`,
+        });
+      }
     }
 
     try {
@@ -909,13 +924,15 @@ export function MediaCloneDialog({
                 </div>
                 {applyMode === "ultimate_cloning" ? (
                   <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-                    <div>极致克隆更适合精确、短时的样本。</div>
+                    <div>极致克隆更依赖音频与 prompt_text 的精确对齐，15 秒内通常更稳，40 秒以内可尝试。</div>
                     <div>当前选段时长：{selectedDuration > 0 ? `${selectedDuration.toFixed(2)} 秒` : "未选择"}。</div>
                     {subtitleResult?.sourceType === "whisperx_generated" ? (
                       <div>当前字幕来自 WhisperX 自动转写，文本与音频只要有细微偏差，就更容易让生成内容跑偏。</div>
                     ) : null}
-                    {selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS ? (
-                      <div>当前样本超过 {ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒，建议缩短后再用极致克隆，或改用可控克隆。</div>
+                    {selectedDuration > ULTIMATE_CLONING_HARD_MAX_SECONDS ? (
+                      <div>当前样本已超过 {ULTIMATE_CLONING_HARD_MAX_SECONDS} 秒上限，请缩短后再用极致克隆，或改用可控克隆。</div>
+                    ) : selectedDuration > ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS ? (
+                      <div>当前样本超过 {ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS} 秒推荐值，但仍在 {ULTIMATE_CLONING_HARD_MAX_SECONDS} 秒上限内。可以继续尝试，不过更建议缩短样本后再用极致克隆。</div>
                     ) : null}
                   </div>
                 ) : null}
