@@ -637,23 +637,15 @@ def build_subtitle_cues_from_words(
 
 
 async def transcribe_audio_for_prompt(audio_path: Path, *, whisperx_url: str) -> str:
-    candidates: list[tuple[str, str]] = []
-    for language in ("zh", "en"):
-        words, detected_language = await _transcribe_words_once(
-            audio_path,
-            whisperx_url=whisperx_url,
-            language=language,
-        )
-        text = _join_words([str(item["word"]) for item in words], language=detected_language)
-        if text:
-            candidates.append((text, detected_language))
-    if not candidates:
-        raise DomainError("invalid_input", "WhisperX did not detect usable speech text in the processed clip")
-    best_text, best_language = max(
-        candidates,
-        key=lambda item: (_transcript_score(item[0], language=item[1]), len(item[0])),
+    words, detected_language = await _transcribe_words_once(
+        audio_path,
+        whisperx_url=whisperx_url,
+        language="auto",
     )
-    return best_text.strip() if best_language else best_text.strip()
+    text = _join_words([str(item["word"]) for item in words], language=detected_language)
+    if not text:
+        raise DomainError("invalid_input", "WhisperX did not detect usable speech text in the processed clip")
+    return text.strip()
 
 
 async def resolve_whisperx_subtitles(
@@ -664,22 +656,14 @@ async def resolve_whisperx_subtitles(
     with tempfile.TemporaryDirectory(prefix="tts-subtitles-") as temp_dir:
         working_audio = Path(temp_dir) / "source.wav"
         await asyncio.to_thread(_extract_full_audio_for_transcription, source_path, working_audio)
-        candidates: list[tuple[str, list[dict[str, Any]], str]] = []
-        for language in ("zh", "en"):
-            words, detected_language = await _transcribe_words_once(
-                working_audio,
-                whisperx_url=whisperx_url,
-                language=language,
-            )
-            text = _join_words([str(item["word"]) for item in words], language=detected_language)
-            if words and text:
-                candidates.append((detected_language, words, text))
-    if not candidates:
+        words, language = await _transcribe_words_once(
+            working_audio,
+            whisperx_url=whisperx_url,
+            language="auto",
+        )
+        text = _join_words([str(item["word"]) for item in words], language=language)
+    if not words or not text:
         raise DomainError("subtitle_unavailable", "WhisperX 未能从该素材中识别出可用字幕")
-    language, words, _text = max(
-        candidates,
-        key=lambda item: (_transcript_score(item[2], language=item[0]), len(item[2])),
-    )
     cues = build_subtitle_cues_from_words(words, language=language)
     if not cues:
         raise DomainError("subtitle_unavailable", "WhisperX 已返回转录结果，但没有生成可用字幕分段")

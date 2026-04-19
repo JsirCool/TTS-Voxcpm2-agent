@@ -73,7 +73,13 @@ export interface TrialSynthesisResult {
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.detail || `请求失败 (${response.status})`);
+    throw Object.assign(
+      new Error(body?.detail || `请求失败 (${response.status})`),
+      {
+        code: body?.error,
+        status: response.status,
+      },
+    );
   }
   return body as T;
 }
@@ -115,6 +121,7 @@ export async function importBilibiliMedia(input: {
 export async function resolveMediaSubtitles(input: {
   file?: File | null;
   sourceRelativePath?: string | null;
+  allowWhisperx?: boolean;
 }): Promise<SubtitleResolveResult> {
   const form = new FormData();
   if (input.file) {
@@ -123,6 +130,7 @@ export async function resolveMediaSubtitles(input: {
   if (input.sourceRelativePath) {
     form.append("source_relative_path", input.sourceRelativePath);
   }
+  form.append("allow_whisperx", input.allowWhisperx ? "true" : "false");
 
   const response = await fetch(`${getApiUrl()}/media/subtitles/resolve`, {
     method: "POST",

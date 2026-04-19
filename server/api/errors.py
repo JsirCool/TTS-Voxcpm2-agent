@@ -34,6 +34,7 @@ _STATUS_MAP: dict[str, int] = {
     "ffprobe_unavailable": 409,
     "demucs_unavailable": 409,
     "whisperx_unavailable": 409,
+    "subtitle_requires_whisperx": 409,
     "subtitle_unavailable": 409,
     "bilibili_unavailable": 409,
     "voxcpm_unavailable": 409,

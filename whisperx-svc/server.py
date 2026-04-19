@@ -229,7 +229,7 @@ async def readyz() -> JSONResponse:
 )
 async def transcribe(
     audio: UploadFile = File(...),
-    language: Literal["zh", "en"] = Form("zh"),
+    language: Literal["zh", "en", "auto"] = Form("zh"),
     return_word_timestamps: bool = Form(True),
 ) -> TranscribeResponse | JSONResponse:
     if not STATE.model_loaded:
@@ -303,7 +303,8 @@ def _run_transcribe_blocking(
     audio = whisperx.load_audio(audio_path)
     duration_s = float(len(audio)) / 16000.0
 
-    result = STATE.model.transcribe(audio, language=language, batch_size=8)
+    transcribe_language = None if language == "auto" else language
+    result = STATE.model.transcribe(audio, language=transcribe_language, batch_size=8)
     detected_language = result.get("language", language)
 
     words: list[Word] = []

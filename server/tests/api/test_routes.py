@@ -543,7 +543,30 @@ class TestMediaRoutes:
             "cues": [{"id": "cue_001", "startS": 0.0, "endS": 1.2, "text": "大家好"}],
         }
 
-    async def test_media_subtitles_resolve_falls_back_to_whisperx(
+    async def test_media_subtitles_resolve_requires_confirmation_before_whisperx(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported",): imported_source,
+        )
+        monkeypatch.setattr(media_routes, "resolve_bilibili_official_subtitles", lambda _: None)
+
+        resp = await client.post(
+            "/media/subtitles/resolve",
+            data={"source_relative_path": "imported/bilibili/BV1/audio/p01.wav"},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "subtitle_requires_whisperx"
+        assert "WhisperX" in resp.json()["detail"]
+
+    async def test_media_subtitles_resolve_falls_back_to_whisperx_when_confirmed(
         self,
         client: AsyncClient,
         monkeypatch: pytest.MonkeyPatch,
@@ -572,7 +595,10 @@ class TestMediaRoutes:
 
         resp = await client.post(
             "/media/subtitles/resolve",
-            data={"source_relative_path": "imported/bilibili/BV1/audio/p01.wav"},
+            data={
+                "source_relative_path": "imported/bilibili/BV1/audio/p01.wav",
+                "allow_whisperx": "true",
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["sourceType"] == "whisperx_generated"

@@ -287,6 +287,7 @@ async def get_media_source(path: str = Query(..., min_length=1)) -> FileResponse
 async def resolve_subtitles(
     media: UploadFile | None = File(None),
     source_relative_path: str | None = Form(None),
+    allow_whisperx: bool = Form(False),
 ) -> SubtitleResolveResponse:
     if bool(media) == bool(source_relative_path):
         raise DomainError("invalid_input", "media 和 source_relative_path 必须二选一")
@@ -302,6 +303,18 @@ async def resolve_subtitles(
                     language=language,
                     cues=_dict_cues_to_response(cues),
                 )
+
+            if not allow_whisperx:
+                raise DomainError(
+                    "subtitle_requires_whisperx",
+                    "未找到 B 站原生字幕。是否启用 WhisperX 自动转写？转写过程可能会有点久。",
+                )
+
+        if not allow_whisperx:
+            raise DomainError(
+                "subtitle_requires_whisperx",
+                "当前素材没有可直接读取的原生字幕。是否启用 WhisperX 自动转写？转写过程可能会有点久。",
+            )
 
         whisperx_ok, whisperx_error = await _probe_whisperx(DEFAULT_WHISPERX_URL)
         if not whisperx_ok:
@@ -319,6 +332,11 @@ async def resolve_subtitles(
 
     assert media is not None
     filename = media.filename or "clip"
+    if not allow_whisperx:
+        raise DomainError(
+            "subtitle_requires_whisperx",
+            "本地文件需要使用 WhisperX 自动转写生成字幕。是否启用？转写过程可能会有点久。",
+        )
     suffix = Path(filename).suffix or ".bin"
     with tempfile.NamedTemporaryFile(prefix="tts-subtitle-upload-", suffix=suffix, delete=False) as temp:
         temp_path = Path(temp.name)

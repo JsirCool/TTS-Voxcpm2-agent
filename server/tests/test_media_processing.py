@@ -8,6 +8,8 @@ from server.core.domain import DomainError
 from server.core.media_processing import (
     build_output_relative_path,
     demucs_status,
+    resolve_whisperx_subtitles,
+    transcribe_audio_for_prompt,
     validate_trim_bounds,
 )
 
@@ -49,3 +51,50 @@ def test_demucs_status_reports_missing_backend(monkeypatch: pytest.MonkeyPatch):
     status = demucs_status()
     assert status.available is False
     assert "Demucs" in (status.detail or "")
+
+
+@pytest.mark.asyncio
+async def test_resolve_whisperx_subtitles_uses_auto_language(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: list[str] = []
+
+    def _fake_extract(_source: Path, output: Path) -> None:
+        output.write_bytes(b"RIFFdemo")
+
+    async def _fake_transcribe(_audio_path: Path, *, whisperx_url: str, language: str):
+        captured.append(language)
+        return [
+            {"word": "hello", "start": 0.0, "end": 0.5},
+            {"word": "world", "start": 0.5, "end": 1.0},
+        ], "en"
+
+    monkeypatch.setattr("server.core.media_processing._extract_full_audio_for_transcription", _fake_extract)
+    monkeypatch.setattr("server.core.media_processing._transcribe_words_once", _fake_transcribe)
+
+    source = tmp_path / "clip.wav"
+    source.write_bytes(b"RIFFdemo")
+    result = await resolve_whisperx_subtitles(source, whisperx_url="http://whisperx")
+
+    assert captured == ["auto"]
+    assert result.language == "en"
+    assert result.cues[0].text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_for_prompt_uses_auto_language(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: list[str] = []
+
+    async def _fake_transcribe(_audio_path: Path, *, whisperx_url: str, language: str):
+        captured.append(language)
+        return [
+            {"word": "你", "start": 0.0, "end": 0.2},
+            {"word": "好", "start": 0.2, "end": 0.4},
+        ], "zh"
+
+    monkeypatch.setattr("server.core.media_processing._transcribe_words_once", _fake_transcribe)
+
+    source = tmp_path / "clip.wav"
+    source.write_bytes(b"RIFFdemo")
+    text = await transcribe_audio_for_prompt(source, whisperx_url="http://whisperx")
+
+    assert captured == ["auto"]
+    assert text == "你好"

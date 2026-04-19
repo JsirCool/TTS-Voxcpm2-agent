@@ -42,6 +42,8 @@ interface Props {
 
 const ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS = 8;
 
+type ApiError = Error & { code?: string; status?: number };
+
 const ACCEPTED_MEDIA_TYPES =
   "video/mp4,video/quicktime,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a";
 
@@ -180,6 +182,8 @@ export function MediaCloneDialog({
   const [capabilities, setCapabilities] = useState<MediaCapabilities | null>(null);
   const [loadingCapabilities, setLoadingCapabilities] = useState(false);
   const [resolvingSubtitles, setResolvingSubtitles] = useState(false);
+  const [subtitleNeedsWhisperx, setSubtitleNeedsWhisperx] = useState(false);
+  const [subtitlePromptMessage, setSubtitlePromptMessage] = useState("");
   const [subtitleResult, setSubtitleResult] = useState<SubtitleResolveResult | null>(null);
   const [selectionStart, setSelectionStart] = useState<number | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<number | null>(null);
@@ -247,6 +251,8 @@ export function MediaCloneDialog({
     setStartS("0");
     setEndS("");
     setSubtitleResult(null);
+    setSubtitleNeedsWhisperx(false);
+    setSubtitlePromptMessage("");
     setSelectionStart(null);
     setSelectionEnd(null);
     setProcessResult(null);
@@ -298,28 +304,51 @@ export function MediaCloneDialog({
     return () => URL.revokeObjectURL(nextUrl);
   }, [selectedFile, sourceMode]);
 
-  useEffect(() => {
+  const loadSubtitles = useCallback(async (allowWhisperx: boolean) => {
     if (!hasSource) return;
     setResolvingSubtitles(true);
     setSubtitleResult(null);
+    setSubtitleNeedsWhisperx(false);
+    setSubtitlePromptMessage("");
     setSelectionStart(null);
     setSelectionEnd(null);
     setProcessResult(null);
     setPromptText("");
     setTrialResult(null);
 
-    void resolveMediaSubtitles({ file: selectedFile, sourceRelativePath })
-      .then((result) => {
-        setSubtitleResult(result);
-      })
-      .catch((error) => {
+    if (allowWhisperx) {
+      toast.info("WhisperX 正在自动转写字幕", {
+        description: "转写过程可能会有点久，请稍等。",
+      });
+    }
+
+    try {
+      const result = await resolveMediaSubtitles({
+        file: selectedFile,
+        sourceRelativePath,
+        allowWhisperx,
+      });
+      setSubtitleResult(result);
+    } catch (error) {
+      const apiError = error as ApiError;
+      if (apiError.code === "subtitle_requires_whisperx") {
+        setSubtitleNeedsWhisperx(true);
+        setSubtitlePromptMessage(apiError.message);
+      } else {
         setSubtitleResult(null);
         toast.error("生成字幕失败", {
-          description: (error as Error).message,
+          description: apiError.message,
         });
-      })
-      .finally(() => setResolvingSubtitles(false));
+      }
+    } finally {
+      setResolvingSubtitles(false);
+    }
   }, [hasSource, selectedFile, sourceRelativePath]);
+
+  useEffect(() => {
+    if (!hasSource) return;
+    void loadSubtitles(false);
+  }, [hasSource, loadSubtitles]);
 
   useEffect(() => {
     if (!subtitleResult) {
@@ -796,6 +825,24 @@ export function MediaCloneDialog({
                     )}
                   </div>
                 </>
+              ) : subtitleNeedsWhisperx ? (
+                <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                  <div className="font-semibold">没有找到可直接使用的原生字幕</div>
+                  <div className="text-xs leading-relaxed">
+                    {subtitlePromptMessage || "如果需要字幕选段，可以启用 WhisperX 自动转写。转写过程可能会有点久。"}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadSubtitles(true)}
+                    disabled={resolvingSubtitles || !capabilities?.whisperx}
+                    className="rounded bg-amber-700 px-3 py-2 text-xs font-medium text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-amber-300 dark:bg-amber-500 dark:hover:bg-amber-400 dark:disabled:bg-amber-900"
+                  >
+                    启用 WhisperX 自动转写
+                  </button>
+                  {!capabilities?.whisperx ? (
+                    <div className="text-xs">WhisperX 当前不可用，请先启动本地 WhisperX 服务。</div>
+                  ) : null}
+                </div>
               ) : (
                 <div className="rounded-lg border border-dashed border-neutral-200 px-3 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
                   当前还没有可用字幕。你仍然可以手动填写开始和结束时间作为兜底。
