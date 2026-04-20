@@ -361,3 +361,74 @@ python .\desktop\launcher.py
 .\desktop\build-launcher.ps1
 .\desktop\build-portable.ps1
 ```
+
+### 桌面模式最少配置
+
+如果你想降低学习成本，最简单的做法是只准备 3 个路径：
+
+1. `VOXCPM_MODEL_PATH`
+2. `HF_HOME`
+3. `HARNESS_VOICE_SOURCE_DIR`
+
+推荐目录长这样：
+
+```text
+E:\VC\
+  tts-agent-harness\
+  pretrained_models\
+    VoxCPM2\
+  hf-cache\
+  voice_sourse\
+```
+
+对应关系：
+
+- `VOXCPM_MODEL_PATH = E:\VC\pretrained_models\VoxCPM2`
+- `HF_HOME = E:\VC\hf-cache`
+- `HARNESS_VOICE_SOURCE_DIR = E:\VC\voice_sourse`
+
+桌面模式配置文件模板在：
+
+- `desktop/desktop.env.example`
+
+真正运行时读取的是：
+
+- `.desktop/desktop.env`
+
+最省事的方式有两种：
+
+1. 直接运行：
+
+```powershell
+python .\desktop\launcher.py
+```
+
+在界面里选择这 3 个目录，然后点击“保存配置”。
+
+2. 手动复制模板：
+
+```powershell
+mkdir .desktop
+copy .\desktop\desktop.env.example .\.desktop\desktop.env
+```
+
+然后把 `.desktop\desktop.env` 改成你自己的路径。
+
+### 桌面模式建议流程
+
+第一次使用桌面模式，建议按这个顺序来：
+
+1. 准备好 `VoxCPM2` 模型目录
+2. 准备好 `WhisperX / HF` 缓存目录
+3. 准备好 `voice_sourse` 目录
+4. 运行 `python .\desktop\launcher.py`
+5. 在启动器里保存路径
+6. 点击“启动全部”
+7. 等待浏览器打开 `http://127.0.0.1:3010`
+
+如果你只是想直接运行脚本，也可以：
+
+```powershell
+copy .\desktop\desktop.env.example .\.desktop\desktop.env
+.\start-desktop-stack.bat
+```

@@ -377,3 +377,64 @@ If you want to build a launcher EXE:
 ```powershell
 .\desktop\build-launcher.ps1
 ```
+
+### Recommended first-run setup
+
+For the desktop mode, the only paths most users really need to care about are:
+
+- `VOXCPM_MODEL_PATH`
+- `HF_HOME`
+- `HARNESS_VOICE_SOURCE_DIR`
+
+Recommended layout:
+
+```text
+E:\VC\
+  tts-agent-harness\
+  pretrained_models\
+    VoxCPM2\
+  hf-cache\
+  voice_sourse\
+```
+
+Example values:
+
+```text
+VOXCPM_MODEL_PATH=E:\VC\pretrained_models\VoxCPM2
+HF_HOME=E:\VC\hf-cache
+HARNESS_VOICE_SOURCE_DIR=E:\VC\voice_sourse
+```
+
+The repo includes a desktop config template:
+
+- `desktop/desktop.env.example`
+
+You can either:
+
+1. open the launcher and save the values from the UI
+
+```powershell
+python .\desktop\launcher.py
+```
+
+2. or copy the template manually
+
+```powershell
+mkdir .desktop
+copy .\desktop\desktop.env.example .\.desktop\desktop.env
+```
+
+and then edit:
+
+- `.desktop\desktop.env`
+
+### Quick desktop checklist
+
+If you want the lowest-friction path, do this:
+
+1. prepare `VoxCPM2` model files
+2. prepare `WhisperX / HF` cache
+3. create `voice_sourse`
+4. run `python .\desktop\launcher.py`
+5. save the three paths
+6. click `启动全部`
