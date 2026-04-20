@@ -28,6 +28,7 @@ If you are starting from scratch, read these first:
 | # | Doc | Description |
 |---|---|---|
 | 003 | [user-stories](003-user-stories.md) | User stories and feature-oriented scenarios |
+| 018 | [video-script-bilibili](018-video-script-bilibili.md) | Bilibili-style intro video script and shot notes |
 | — | [product](product.md) | Current local-only product overview |
 
 ## Architecture / 架构
