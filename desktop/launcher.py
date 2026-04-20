@@ -8,7 +8,7 @@ import threading
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, TOP, X, filedialog, messagebox, ttk
+from tkinter import BOTH, LEFT, RIGHT, filedialog, messagebox, ttk
 import tkinter as tk
 
 
@@ -19,6 +19,13 @@ DEFAULTS: dict[str, str] = {
     "HARNESS_VOICE_SOURCE_DIR": "..\\voice_sourse",
     "VOXCPM_MODEL_PATH": "E:\\VC\\pretrained_models\\VoxCPM2",
     "HF_HOME": "E:\\VC\\hf-cache",
+}
+
+SERVICE_LABELS = {
+    "web": "Web 前端",
+    "api": "API 后端",
+    "whisperx": "WhisperX",
+    "voxcpm": "VoxCPM",
 }
 
 
@@ -33,6 +40,8 @@ def resolve_root() -> Path:
 
 ROOT = resolve_root()
 DESKTOP_ENV_PATH = ROOT / ".desktop" / "desktop.env"
+ICON_ICO_PATH = ROOT / "desktop" / "assets" / "launcher-icon.ico"
+ICON_PNG_PATH = ROOT / "desktop" / "assets" / "launcher-icon.png"
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -100,9 +109,11 @@ def safe_int(value: str, fallback: int) -> int:
 class LauncherApp:
     def __init__(self, master: tk.Tk) -> None:
         self.master = master
-        self.master.title("TTS Harness Launcher")
-        self.master.geometry("760x620")
-        self.master.minsize(720, 560)
+        self.master.title("姜Sir TTS 工作台启动器")
+        self.master.geometry("820x650")
+        self.master.minsize(760, 600)
+        self._icon_image: tk.PhotoImage | None = None
+        self._apply_icon()
 
         raw = {**DEFAULTS, **load_env_file(DESKTOP_ENV_PATH)}
         self.vars: dict[str, tk.StringVar] = {
@@ -114,85 +125,85 @@ class LauncherApp:
             "WEB_PORT": tk.StringVar(value=raw["WEB_PORT"]),
         }
         self.status_var = tk.StringVar(value="等待环境检查")
-        self.service_vars = {
-            "web": tk.StringVar(value="未知"),
-            "api": tk.StringVar(value="未知"),
-            "whisperx": tk.StringVar(value="未知"),
-            "voxcpm": tk.StringVar(value="未知"),
-        }
+        self.service_vars = {name: tk.StringVar(value="未知") for name in SERVICE_LABELS}
 
         self._build_ui()
         self._warn_if_missing()
         self.refresh_status()
 
+    def _apply_icon(self) -> None:
+        try:
+            if ICON_ICO_PATH.exists():
+                self.master.iconbitmap(default=str(ICON_ICO_PATH))
+        except Exception:
+            pass
+        try:
+            if ICON_PNG_PATH.exists():
+                self._icon_image = tk.PhotoImage(file=str(ICON_PNG_PATH))
+                self.master.iconphoto(True, self._icon_image)
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
-        root = ttk.Frame(self.master, padding=16)
+        root = ttk.Frame(self.master, padding=18)
         root.pack(fill=BOTH, expand=True)
 
-        title = ttk.Label(root, text="TTS Harness 半便携启动器", font=("Microsoft YaHei UI", 16, "bold"))
+        title = ttk.Label(root, text="姜Sir TTS 工作台启动器", font=("Microsoft YaHei UI", 18, "bold"))
         title.pack(anchor="w")
         subtitle = ttk.Label(
             root,
-            text="双击启动后台服务、自动打开网页，并把桌面模式配置保存在 .desktop/desktop.env。",
+            text="双击后即可在后台启动桌面模式服务，并自动打开浏览器。模型、缓存和 voice_sourse 路径会保存到 .desktop/desktop.env。",
+            wraplength=760,
+            foreground="#4b5563",
         )
-        subtitle.pack(anchor="w", pady=(6, 14))
+        subtitle.pack(anchor="w", pady=(6, 16))
 
-        config = ttk.LabelFrame(root, text="环境向导", padding=12)
-        config.pack(fill=X)
+        config = ttk.LabelFrame(root, text="环境向导", padding=14)
+        config.pack(fill=tk.X)
 
         self._path_row(config, "VoxCPM 模型路径", "VOXCPM_MODEL_PATH")
         self._path_row(config, "WhisperX / HF 缓存", "HF_HOME")
         self._path_row(config, "voice_sourse 路径", "HARNESS_VOICE_SOURCE_DIR", create_if_missing=True)
-        self._path_row(config, "桌面数据目录", "HARNESS_DESKTOP_ROOT", create_if_missing=True)
+        self._path_row(config, "桌面模式数据目录", "HARNESS_DESKTOP_ROOT", create_if_missing=True)
         self._text_row(config, "API 端口", "API_PORT")
         self._text_row(config, "Web 端口", "WEB_PORT")
 
         actions = ttk.Frame(root)
-        actions.pack(fill=X, pady=(12, 8))
+        actions.pack(fill=tk.X, pady=(14, 10))
         ttk.Button(actions, text="保存配置", command=self.save_config).pack(side=LEFT)
         ttk.Button(actions, text="启动全部", command=self.start_all).pack(side=LEFT, padx=(8, 0))
         ttk.Button(actions, text="停止全部", command=self.stop_all).pack(side=LEFT, padx=(8, 0))
         ttk.Button(actions, text="刷新状态", command=self.refresh_status).pack(side=LEFT, padx=(8, 0))
 
         shortcuts = ttk.Frame(root)
-        shortcuts.pack(fill=X, pady=(0, 12))
+        shortcuts.pack(fill=tk.X, pady=(0, 14))
         ttk.Button(shortcuts, text="打开 Web", command=self.open_web).pack(side=LEFT)
         ttk.Button(shortcuts, text="打开日志目录", command=self.open_logs).pack(side=LEFT, padx=(8, 0))
         ttk.Button(shortcuts, text="打开桌面数据目录", command=self.open_data_root).pack(side=LEFT, padx=(8, 0))
         ttk.Button(shortcuts, text="调试启动", command=self.start_debug).pack(side=LEFT, padx=(8, 0))
 
-        status = ttk.LabelFrame(root, text="服务状态", padding=12)
+        status = ttk.LabelFrame(root, text="服务状态", padding=14)
         status.pack(fill=BOTH, expand=True)
-        for key, label in (
-            ("web", "Web 3010"),
-            ("api", "API 8100"),
-            ("whisperx", "WhisperX 7860"),
-            ("voxcpm", "VoxCPM 8877"),
-        ):
+        for key, label in SERVICE_LABELS.items():
             row = ttk.Frame(status)
-            row.pack(fill=X, pady=3)
+            row.pack(fill=tk.X, pady=4)
             ttk.Label(row, text=label, width=18).pack(side=LEFT)
             ttk.Label(row, textvariable=self.service_vars[key]).pack(side=LEFT)
 
         bottom = ttk.Frame(root)
-        bottom.pack(fill=X, pady=(12, 0))
-        ttk.Label(bottom, textvariable=self.status_var, foreground="#3f3f46").pack(anchor="w")
+        bottom.pack(fill=tk.X, pady=(14, 0))
+        ttk.Label(bottom, textvariable=self.status_var, foreground="#374151", wraplength=760).pack(anchor="w")
 
     def _path_row(self, parent: ttk.Widget, label: str, key: str, *, create_if_missing: bool = False) -> None:
         row = ttk.Frame(parent)
-        row.pack(fill=X, pady=4)
+        row.pack(fill=tk.X, pady=5)
         ttk.Label(row, text=label, width=18).pack(side=LEFT)
-        entry = ttk.Entry(row, textvariable=self.vars[key])
-        entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 8))
-        ttk.Button(
-            row,
-            text="浏览",
-            command=lambda: self.pick_directory(key, create_if_missing=create_if_missing),
-        ).pack(side=RIGHT)
+        ttk.Entry(row, textvariable=self.vars[key]).pack(side=LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ttk.Button(row, text="浏览", command=lambda: self.pick_directory(key, create_if_missing=create_if_missing)).pack(side=RIGHT)
 
     def _text_row(self, parent: ttk.Widget, label: str, key: str) -> None:
         row = ttk.Frame(parent)
-        row.pack(fill=X, pady=4)
+        row.pack(fill=tk.X, pady=5)
         ttk.Label(row, text=label, width=18).pack(side=LEFT)
         ttk.Entry(row, textvariable=self.vars[key], width=12).pack(side=LEFT)
 
@@ -244,8 +255,7 @@ class LauncherApp:
         if missing:
             messagebox.showwarning(
                 "首次启动提示",
-                "以下路径当前不存在，保存后仍可继续启动，但相关服务可能无法就绪：\n\n- "
-                + "\n- ".join(missing),
+                "以下路径当前不存在，保存后仍可继续启动，但相关服务可能无法就绪：\n\n- " + "\n- ".join(missing),
             )
 
     def _run_script(self, script_name: str, *args: str) -> None:
@@ -310,7 +320,7 @@ class LauncherApp:
 
 def main() -> None:
     root = tk.Tk()
-    app = LauncherApp(root)
+    LauncherApp(root)
     root.mainloop()
 
 

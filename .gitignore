@@ -57,7 +57,11 @@ docs/worklogs/
 desktop/dist/
 desktop/build/
 desktop/portable/
+desktop/release/
+desktop/installer/dist/
+desktop/assets/__pycache__/
 .desktop/
 .desktop-runtime/
+.tmp-pytest/
 build/
 *.spec

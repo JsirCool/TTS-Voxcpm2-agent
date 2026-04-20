@@ -26,8 +26,11 @@ $copyItems = @(
     "server",
     "voxcpm-svc",
     "whisperx-svc",
+    "desktop\assets",
     "desktop\launcher.py",
     "desktop\build-launcher.ps1",
+    "desktop\build-installer.ps1",
+    "desktop\installer",
     "desktop\dist\TTSHarnessLauncher.exe"
 )
 

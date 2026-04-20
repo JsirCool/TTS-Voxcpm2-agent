@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Protocol, runtime_checkable
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from minio import Minio
 from minio.error import S3Error
@@ -24,6 +24,47 @@ from minio.error import S3Error
 from server.core.runtime_mode import desktop_mode_enabled
 
 log = logging.getLogger(__name__)
+
+_FILESYSTEM_ESCAPE_PREFIX = "~fs~"
+_WINDOWS_INVALID_PATH_CHARS = set('<>:"/\\|?*')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _storage_key_parts(key: str) -> list[str]:
+    normalized = (key or "").strip().strip("/")
+    if not normalized:
+        return []
+    return [part for part in PurePosixPath(normalized).parts if part not in ("", ".", "..")]
+
+
+def _needs_filesystem_encoding(part: str) -> bool:
+    if not part or part.startswith(_FILESYSTEM_ESCAPE_PREFIX):
+        return True
+    if part.rstrip(" .") != part:
+        return True
+    if any(ord(ch) < 32 or ch in _WINDOWS_INVALID_PATH_CHARS for ch in part):
+        return True
+    stem = part.partition(".")[0]
+    return stem.upper() in _WINDOWS_RESERVED_NAMES
+
+
+def _encode_filesystem_part(part: str) -> str:
+    if not _needs_filesystem_encoding(part):
+        return part
+    return f"{_FILESYSTEM_ESCAPE_PREFIX}{quote(part, safe='-_()')}"
+
+
+def _decode_filesystem_part(part: str) -> str:
+    if not part.startswith(_FILESYSTEM_ESCAPE_PREFIX):
+        return part
+    return unquote(part[len(_FILESYSTEM_ESCAPE_PREFIX) :])
 
 
 def episode_script_key(episode_id: str) -> str:
@@ -62,7 +103,7 @@ def storage_uri_to_key(uri: str) -> str:
         return raw.lstrip("/")
     _scheme, rest = raw.split("://", 1)
     rest = rest.split("?", 1)[0].strip("/")
-    parts = [part for part in PurePosixPath(rest).parts if part not in ("", ".")]
+    parts = _storage_key_parts(rest)
     if len(parts) <= 1:
         return ""
     return "/".join(parts[1:])
@@ -108,10 +149,7 @@ class _MirrorMixin:
         return self._mirror_root / self._bucket
 
     def _mirror_parts(self, key: str) -> list[str]:
-        normalized = key.strip().strip("/")
-        if not normalized:
-            return []
-        return [quote(part, safe="._-() ") for part in PurePosixPath(normalized).parts if part not in (".", "")]
+        return [_encode_filesystem_part(part) for part in _storage_key_parts(key)]
 
     def mirror_path(self, key: str) -> Path:
         path = self.mirror_root
@@ -354,11 +392,13 @@ class LocalFSStorage(_MirrorMixin):
         bucket: str,
         *,
         mirror_dir: str | Path | None = None,
+        windows_compatible_paths: bool | None = None,
     ) -> None:
         self._root_dir = Path(root_dir).expanduser().resolve()
         self._bucket = bucket
         self._bucket_ready = False
         self._mirror_root = self._resolve_mirror_root(mirror_dir)
+        self._windows_compatible_paths = os.name == "nt" if windows_compatible_paths is None else windows_compatible_paths
 
     @property
     def bucket(self) -> str:
@@ -368,11 +408,22 @@ class LocalFSStorage(_MirrorMixin):
     def bucket_root(self) -> Path:
         return (self._root_dir / self._bucket).resolve()
 
+    def _object_parts(self, key: str) -> list[str]:
+        parts = _storage_key_parts(key)
+        if not self._windows_compatible_paths:
+            return parts
+        return [_encode_filesystem_part(part) for part in parts]
+
+    def _relative_key_for_path(self, path: Path) -> str:
+        relative = path.relative_to(self.bucket_root)
+        parts = list(relative.parts)
+        if not self._windows_compatible_paths:
+            return "/".join(parts)
+        return "/".join(_decode_filesystem_part(part) for part in parts)
+
     def object_path(self, key: str) -> Path:
         path = self.bucket_root
-        for part in PurePosixPath(key.strip("/")).parts:
-            if part in ("", ".", ".."):
-                continue
+        for part in self._object_parts(key):
             path = path / part
         return path.resolve()
 
@@ -479,13 +530,13 @@ class LocalFSStorage(_MirrorMixin):
                 return 0
             count = 0
             if prefix_path.is_file():
-                rel_key = str(prefix).strip("/")
+                rel_key = self._relative_key_for_path(prefix_path)
                 self._write_mirror_bytes_sync(rel_key, prefix_path.read_bytes())
                 return 1
             for candidate in prefix_path.rglob("*"):
                 if not candidate.is_file():
                     continue
-                relative = candidate.relative_to(self.bucket_root).as_posix()
+                relative = self._relative_key_for_path(candidate)
                 self._write_mirror_bytes_sync(relative, candidate.read_bytes())
                 count += 1
             return count

@@ -133,6 +133,33 @@ async def test_localfs_upload_file_and_delete_prefix(tmp_path: Path):
     assert not (tmp_path / "storage" / "tts-harness" / "episodes" / "ep1").exists()
 
 
+@pytest.mark.asyncio
+async def test_localfs_windows_compatible_paths_support_chunk_ids_with_colons(tmp_path: Path):
+    from server.core.storage import LocalFSStorage
+
+    storage = LocalFSStorage(
+        root_dir=tmp_path / "storage",
+        bucket="tts-harness",
+        mirror_dir=tmp_path / "mirror",
+        windows_compatible_paths=True,
+    )
+    key = "episodes/面试/chunks/面试:shot01:1/takes/t1.wav"
+
+    await storage.upload_bytes(key, b"voice")
+
+    stored_parts = storage.object_path(key).relative_to(storage.bucket_root).parts
+    assert stored_parts[3].startswith("~fs~")
+    assert ":" not in stored_parts[3]
+    assert await storage.exists(key) is True
+    assert await storage.download_bytes(key) == b"voice"
+    assert storage.mirror_path(key).read_bytes() == b"voice"
+
+    storage.mirror_path(key).unlink()
+    synced = await storage.sync_prefix_to_mirror("episodes/面试")
+    assert synced == 1
+    assert storage.mirror_path(key).read_bytes() == b"voice"
+
+
 def test_storage_uri_to_key_supports_multiple_backends():
     from server.core.storage import storage_uri_to_key
 

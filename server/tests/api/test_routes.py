@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -159,6 +160,30 @@ class TestHealthz:
         resp = await client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+class TestAudioRoute:
+    async def test_audio_route_accepts_encoded_localfs_uri(self, client: AsyncClient):
+        from server.api.main import app
+        from server.api.deps import get_storage
+
+        storage = MagicMock()
+        storage.download_bytes = AsyncMock(return_value=b"RIFFdemoWAVE")
+        app.dependency_overrides[get_storage] = lambda: storage
+
+        audio_uri = (
+            "localfs://tts-harness/"
+            "episodes/面试/chunks/面试:shot01:1/takes/"
+            "tk_37a48e007bc9432daa2ae3d79891991e.wav"
+        )
+        resp = await client.get(f"/audio/{quote(audio_uri, safe='')}")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        assert resp.content == b"RIFFdemoWAVE"
+        storage.download_bytes.assert_awaited_once_with(
+            "episodes/面试/chunks/面试:shot01:1/takes/tk_37a48e007bc9432daa2ae3d79891991e.wav"
+        )
 
 
 class TestEpisodeCRUD:
