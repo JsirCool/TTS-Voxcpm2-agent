@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from prefect import task
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.core import events as events_module
 from server.core.domain import DomainError, P6Result
@@ -52,7 +52,8 @@ from server.core.p6_logic import (
 )
 from server.core.repositories import ChunkRepo, EpisodeRepo, TakeRepo
 from server.core.storage import (
-    MinIOStorage,
+    StorageBackend,
+    build_storage_from_env,
     chunk_subtitle_key,
     chunk_take_key,
     final_srt_key,
@@ -101,13 +102,13 @@ async def _emit_stage_failed(
 # ---------------------------------------------------------------------------
 
 _SESSION_FACTORY: async_sessionmaker | None = None
-_STORAGE: MinIOStorage | None = None
+_STORAGE: StorageBackend | None = None
 
 
 def configure_p6_dependencies(
     *,
     session_factory: async_sessionmaker,
-    storage: MinIOStorage,
+    storage: StorageBackend,
 ) -> None:
     """Inject shared DB + MinIO handles. Called once by worker_bootstrap."""
     global _SESSION_FACTORY, _STORAGE
@@ -124,17 +125,10 @@ def _get_session_factory() -> async_sessionmaker:
     return async_sessionmaker(create_async_engine(url, future=True), expire_on_commit=False)
 
 
-def _get_storage() -> MinIOStorage:
+def _get_storage() -> StorageBackend:
     if _STORAGE is not None:
         return _STORAGE
-    # Fallback: create from env
-    return MinIOStorage(
-        endpoint=os.getenv("MINIO_ENDPOINT", "localhost:59000"),
-        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-        bucket=os.getenv("MINIO_BUCKET", "tts-harness"),
-        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-    )
+    return build_storage_from_env()
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +142,7 @@ async def run_p6_concat(
     padding_ms: int = 200,
     shot_gap_ms: int = 500,
     session: AsyncSession,
-    storage: MinIOStorage,
+    storage: StorageBackend,
     workdir: Path | None = None,
 ) -> P6Result:
     """Execute the P6 concat for a single episode.

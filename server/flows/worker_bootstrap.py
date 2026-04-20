@@ -16,23 +16,23 @@ DI pattern, use :func:`get_p1_context` after bootstrapping.
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
-from server.core.storage import MinIOStorage
+from server.core.runtime_mode import apply_desktop_defaults
+from server.core.storage import StorageBackend, build_storage_from_env
 from server.flows.tasks.p1_chunk import P1Context
 
 log = logging.getLogger(__name__)
 
 # Module-level state set by bootstrap().
 _session_factory: async_sessionmaker[AsyncSession] | None = None
-_storage: MinIOStorage | None = None
+_storage: StorageBackend | None = None
 _bootstrapped = False
 
 
@@ -51,18 +51,12 @@ def bootstrap() -> None:
         log.debug("worker_bootstrap: already bootstrapped, skipping")
         return
 
-    from server.core.db import _database_url
-    database_url = _database_url()
-    engine = create_async_engine(database_url, future=True, pool_pre_ping=True)
-    _session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    apply_desktop_defaults()
+    from server.core.db import get_sessionmaker
 
-    _storage = MinIOStorage(
-        endpoint=_env("MINIO_ENDPOINT", "localhost:59000"),
-        access_key=_env("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=_env("MINIO_SECRET_KEY", "minioadmin"),
-        bucket=_env("MINIO_BUCKET", "tts-harness"),
-        secure=_env("MINIO_SECURE", "false").lower() == "true",
-    )
+    _session_factory = get_sessionmaker()
+
+    _storage = build_storage_from_env()
 
     # Wire P2.
     from server.flows.tasks.p2_synth import configure_p2_dependencies
@@ -163,7 +157,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
-def get_storage() -> MinIOStorage:
+def get_storage() -> StorageBackend:
     """Return the bootstrapped storage instance (for flows that need it)."""
     if _storage is None:
         raise RuntimeError("worker not bootstrapped. Call bootstrap() first.")

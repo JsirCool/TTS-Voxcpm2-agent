@@ -26,10 +26,11 @@ from server.core.p6_logic import (
 )
 from server.core.repositories import TakeRepo
 from server.core.storage import (
-    MinIOStorage,
+    StorageBackend,
     chunk_subtitle_key,
     final_srt_key,
     final_wav_key,
+    storage_uri_to_key,
 )
 
 DEFAULT_EXPORT_FPS = 30
@@ -174,7 +175,7 @@ async def build_export_bundle(
     episode_id: str,
     chunks: Sequence[Chunk],
     take_repo: TakeRepo,
-    storage: MinIOStorage,
+    storage: StorageBackend,
     fps: int = DEFAULT_EXPORT_FPS,
     selected_takes: dict[str, Any] | None = None,
     episode_title: str | None = None,
@@ -232,11 +233,7 @@ async def build_export_bundle(
         chunk_wav_blobs: list[bytes] = []
         for item in items:
             take = item["take"]
-            audio_key = (
-                take.audio_uri.split("//", 1)[-1].split("/", 1)[-1]
-                if take.audio_uri.startswith("s3://")
-                else take.audio_uri
-            )
+            audio_key = storage_uri_to_key(take.audio_uri)
             chunk_wav_blobs.append(await storage.download_bytes(audio_key))
         shot_wav_bytes = await _concat_wav_sequence(
             chunk_wav_blobs,

@@ -6,7 +6,7 @@ from io import BytesIO
 
 from server.api.deps import get_storage
 from server.core.domain import DomainError
-from server.core.storage import MinIOStorage
+from server.core.storage import StorageBackend, storage_uri_to_key
 
 router = APIRouter()
 
@@ -14,7 +14,7 @@ router = APIRouter()
 @router.get("/audio/{audio_key:path}")
 async def serve_audio(
     audio_key: str,
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> StreamingResponse:
     """Stream a WAV file from MinIO.
 
@@ -22,10 +22,7 @@ async def serve_audio(
     episodes/ch04/chunks/ch04:shot01:1/takes/abc123.wav
     """
     # Strip s3://bucket/ prefix if present (audioUri from DB includes it)
-    key = audio_key
-    if key.startswith("s3://"):
-        # s3://tts-harness/episodes/... → episodes/...
-        key = key.split("/", 3)[-1] if key.count("/") >= 3 else key
+    key = storage_uri_to_key(audio_key)
 
     try:
         data = await storage.download_bytes(key)

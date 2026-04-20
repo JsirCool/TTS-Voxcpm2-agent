@@ -317,3 +317,47 @@ curl http://127.0.0.1:8100/readyz
 ## License
 
 GPL-3.0
+
+## Desktop Portable Mode
+
+This repo now also includes a Docker-free desktop mode for Windows.
+
+What changes in desktop mode:
+
+- database: local `SQLite`
+- object storage: local filesystem directory
+- orchestration: local in-process execution instead of requiring `Prefect Server`
+- still required locally:
+  - `VoxCPM2` model directory
+  - `WhisperX / Hugging Face` cache
+  - `voice_sourse` reference audio directory
+
+Desktop mode entry points:
+
+- `start-desktop-stack.bat`
+- `start-desktop-stack-debug.bat`
+- `stop-desktop-stack.bat`
+- `desktop/launcher.py`
+
+Desktop runtime data is stored under:
+
+```text
+.desktop-runtime/
+  logs/
+  data/
+  storage/
+```
+
+Desktop settings are stored under:
+
+```text
+.desktop/desktop.env
+```
+
+Useful commands:
+
+```powershell
+python .\desktop\launcher.py
+.\desktop\build-launcher.ps1
+.\desktop\build-portable.ps1
+```

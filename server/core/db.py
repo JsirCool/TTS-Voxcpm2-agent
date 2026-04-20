@@ -22,11 +22,15 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from server.core.runtime_mode import apply_desktop_defaults, desktop_mode_enabled
+
 
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://harness:harness@localhost:5432/harness"
 
 
 def _database_url() -> str:
+    if desktop_mode_enabled():
+        apply_desktop_defaults()
     url = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
     # Fly Postgres gives postgres:// but asyncpg needs postgresql+asyncpg://
     if url.startswith("postgres://"):
@@ -41,6 +45,18 @@ def _database_url() -> str:
     return url
 
 
+def _engine_kwargs(url: str) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "echo": False,
+        "future": True,
+    }
+    if url.startswith("sqlite+aiosqlite://"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        kwargs["pool_pre_ping"] = True
+    return kwargs
+
+
 @lru_cache(maxsize=1)
 def get_engine() -> AsyncEngine:
     """
@@ -49,12 +65,8 @@ def get_engine() -> AsyncEngine:
     We use `lru_cache` so that tests can monkeypatch `os.environ` and call
     `get_engine.cache_clear()` to pick up a new DATABASE_URL.
     """
-    return create_async_engine(
-        _database_url(),
-        echo=False,
-        pool_pre_ping=True,
-        future=True,
-    )
+    url = _database_url()
+    return create_async_engine(url, **_engine_kwargs(url))
 
 
 @lru_cache(maxsize=1)

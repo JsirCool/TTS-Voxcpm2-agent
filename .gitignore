@@ -52,3 +52,12 @@ _archive/
 prototype*.html
 docs/_archive/
 docs/worklogs/
+
+# Desktop launcher / portable mode
+desktop/dist/
+desktop/build/
+desktop/portable/
+.desktop/
+.desktop-runtime/
+build/
+*.spec

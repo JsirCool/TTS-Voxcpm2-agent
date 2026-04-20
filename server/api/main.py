@@ -29,13 +29,19 @@ from server.api.routes.media import router as media_router
 from server.api.routes.presets import router as presets_router
 from server.api.sse import router as sse_router
 from server.api.sse import start_listener, stop_listener
-from server.core.db import _database_url
+from server.core.db import _database_url, get_engine
+from server.core.runtime_mode import desktop_mode_enabled, ensure_desktop_directories, ensure_sqlite_schema
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    # Start SSE listener
-    await start_listener(_database_url())
+    database_url = _database_url()
+    if desktop_mode_enabled():
+        ensure_desktop_directories()
+        if database_url.startswith("sqlite+aiosqlite://"):
+            await ensure_sqlite_schema(get_engine())
+    if database_url.startswith("postgres"):
+        await start_listener(database_url)
     yield
     await stop_listener()
 

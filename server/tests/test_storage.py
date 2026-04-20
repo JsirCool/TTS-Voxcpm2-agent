@@ -93,3 +93,49 @@ def test_path_helpers_match_adr():
     assert final_wav_key("ep1") == "episodes/ep1/final/episode.wav"
     assert final_srt_key("ep1") == "episodes/ep1/final/episode.srt"
     assert chunk_log_key("ep1", "c1", "p2") == "episodes/ep1/logs/c1/p2.log"
+
+
+@pytest.mark.asyncio
+async def test_localfs_upload_and_download(tmp_path: Path):
+    from server.core.storage import LocalFSStorage
+
+    storage = LocalFSStorage(
+        root_dir=tmp_path / "storage",
+        bucket="tts-harness",
+        mirror_dir=tmp_path / "mirror",
+    )
+    key = "episodes/ep-local/script.json"
+    uri = await storage.upload_bytes(key, b'{"hello": 2}')
+
+    assert uri == "localfs://tts-harness/episodes/ep-local/script.json"
+    assert await storage.exists(key) is True
+    assert await storage.download_bytes(key) == b'{"hello": 2}'
+    assert storage.mirror_path(key).read_bytes() == b'{"hello": 2}'
+
+
+@pytest.mark.asyncio
+async def test_localfs_upload_file_and_delete_prefix(tmp_path: Path):
+    from server.core.storage import LocalFSStorage
+
+    storage = LocalFSStorage(
+        root_dir=tmp_path / "storage",
+        bucket="tts-harness",
+        mirror_dir=tmp_path / "mirror",
+    )
+    src = tmp_path / "sample.wav"
+    src.write_bytes(b"RIFFdemoWAVE")
+
+    await storage.upload_file("episodes/ep1/chunks/c1/takes/t1.wav", src)
+    await storage.upload_bytes("episodes/ep1/chunks/c1/transcript.json", b"{}")
+
+    deleted = await storage.delete_prefix("episodes/ep1")
+    assert deleted == 2
+    assert not (tmp_path / "storage" / "tts-harness" / "episodes" / "ep1").exists()
+
+
+def test_storage_uri_to_key_supports_multiple_backends():
+    from server.core.storage import storage_uri_to_key
+
+    assert storage_uri_to_key("s3://tts-harness/episodes/ep1/script.json") == "episodes/ep1/script.json"
+    assert storage_uri_to_key("localfs://tts-harness/episodes/ep1/script.json") == "episodes/ep1/script.json"
+    assert storage_uri_to_key("episodes/ep1/script.json") == "episodes/ep1/script.json"

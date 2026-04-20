@@ -1,4 +1,4 @@
-"""Episode + chunk routes.
+﻿"""Episode + chunk routes.
 
 All business logic is delegated to repositories. Route handlers are thin:
 validate input → call repo → return response model.
@@ -43,7 +43,7 @@ from server.core.repositories import (
     TakeRepo,
 )
 from server.core.models import Event
-from server.core.storage import MinIOStorage, episode_script_key
+from server.core.storage import StorageBackend, episode_script_key, storage_uri_to_key
 from server.core.export_bundle import (
     DEFAULT_EXPORT_FPS,
     build_export_bundle,
@@ -212,7 +212,7 @@ async def create_episode(
     config: str = Form("{}"),
     script: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> EpisodeView:
     # Upload script to MinIO
     script_bytes = await script.read()
@@ -1213,7 +1213,7 @@ async def duplicate_episode(
     episode_id: str,
     body: DuplicateRequest,
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> EpisodeView:
     repo = EpisodeRepo(session)
     original = await repo.get(episode_id)
@@ -1361,7 +1361,7 @@ async def get_chunk_log(
     chunk_id: str,
     stage: str = Query(..., description="Stage name, e.g. p2"),
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> ChunkLogResponse:
     # Verify chunk belongs to episode
     chunk_repo = ChunkRepo(session)
@@ -1375,13 +1375,7 @@ async def get_chunk_log(
     if sr is None or not sr.log_uri:
         raise DomainError("not_found", f"no log found for chunk '{chunk_id}' stage '{stage}'")
 
-    # log_uri is s3://bucket/key — extract key (strip "s3://bucket/" prefix)
-    if sr.log_uri.startswith("s3://"):
-        # s3://bucket/path/to/file → path/to/file
-        parts = sr.log_uri.split("/", 3)  # ['s3:', '', 'bucket', 'path/to/file']
-        log_key = parts[3] if len(parts) > 3 else ""
-    else:
-        log_key = sr.log_uri
+    log_key = storage_uri_to_key(sr.log_uri)
 
     try:
         log_bytes = await storage.download_bytes(log_key)
@@ -1460,7 +1454,7 @@ async def get_episode_logs(
 async def get_episode_script(
     episode_id: str,
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ):
     """Return the original script.json for this episode."""
     repo = EpisodeRepo(session)
@@ -1507,7 +1501,7 @@ async def export_episode(
     format: str = Query("shots", description="Export format: shots (per-shot WAV + final episode WAV/SRT)"),
     fps: int = Query(DEFAULT_EXPORT_FPS, ge=1, le=120),
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ):
     """Export episode production assets as a zip file.
 
@@ -1589,7 +1583,7 @@ async def export_episode_local(
     episode_id: str,
     body: ExportLocalRequest,
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> ExportLocalResponse:
     if not body.directory.strip():
         raise DomainError("invalid_input", "directory is required")

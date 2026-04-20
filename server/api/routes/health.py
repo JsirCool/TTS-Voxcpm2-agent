@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.api.deps import get_session, get_storage
-from server.core.storage import MinIOStorage
+from server.core.storage import StorageBackend
 
 router = APIRouter()
 
@@ -20,7 +20,7 @@ async def healthz() -> dict[str, str]:
 @router.get("/readyz", tags=["ops"])
 async def readyz(
     session: AsyncSession = Depends(get_session),
-    storage: MinIOStorage = Depends(get_storage),
+    storage: StorageBackend = Depends(get_storage),
 ) -> dict[str, object]:
     database_ok = True
     storage_ok = True

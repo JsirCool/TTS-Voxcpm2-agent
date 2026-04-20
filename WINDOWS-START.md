@@ -347,3 +347,33 @@ The final processed clone source still goes through the normal pipeline and is w
 ```text
 E:\VC\voice_sourse\imported
 ```
+
+## 15. Desktop Portable Mode
+
+If you want a lighter Windows experience without Docker, use the new desktop mode:
+
+- [start-desktop-stack.bat](/E:/VC/tts-agent-harness/start-desktop-stack.bat)
+- [start-desktop-stack-debug.bat](/E:/VC/tts-agent-harness/start-desktop-stack-debug.bat)
+- [stop-desktop-stack.bat](/E:/VC/tts-agent-harness/stop-desktop-stack.bat)
+
+Desktop mode switches the local stack to:
+
+- `SQLite` instead of Postgres
+- local filesystem storage instead of MinIO
+- local in-process execution instead of depending on Prefect Server
+
+Desktop settings live in:
+
+- [`.desktop/desktop.env`](/E:/VC/tts-agent-harness/.desktop/desktop.env)
+
+You can manage the paths and start/stop flow with:
+
+```powershell
+python .\desktop\launcher.py
+```
+
+If you want to build a launcher EXE:
+
+```powershell
+.\desktop\build-launcher.ps1
+```

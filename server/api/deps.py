@@ -13,7 +13,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.db import get_session as _core_get_session
-from server.core.storage import MinIOStorage
+from server.core.runtime_mode import is_truthy
+from server.core.storage import StorageBackend, build_storage_from_env
 
 
 # ---------------------------------------------------------------------------
@@ -31,20 +32,14 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 # MinIO storage
 # ---------------------------------------------------------------------------
 
-_storage_singleton: MinIOStorage | None = None
+_storage_singleton: StorageBackend | None = None
 
 
-def _build_storage() -> MinIOStorage:
-    return MinIOStorage(
-        endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:59000"),
-        access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-        secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
-        bucket=os.environ.get("MINIO_BUCKET", "tts-harness"),
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-    )
+def _build_storage() -> StorageBackend:
+    return build_storage_from_env()
 
 
-def get_storage() -> MinIOStorage:
+def get_storage() -> StorageBackend:
     global _storage_singleton
     if _storage_singleton is None:
         _storage_singleton = _build_storage()
@@ -65,6 +60,10 @@ async def get_prefect_client() -> AsyncIterator[Any]:
         async def run_episode(id: str, client=Depends(get_prefect_client)):
             await client.create_flow_run_from_deployment(...)
     """
+    if not is_truthy(os.environ.get("TTS_USE_PREFECT")):
+        yield None
+        return
+
     from prefect.client.orchestration import get_client
 
     async with get_client() as client:

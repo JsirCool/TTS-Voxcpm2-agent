@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.core.domain import DomainError
 from server.core.events import write_event
 from server.core.repositories import ChunkRepo, StageRunRepo, TakeRepo
-from server.core.storage import MinIOStorage
+from server.core.storage import StorageBackend, storage_uri_to_key
 
 log = logging.getLogger(__name__)
 
@@ -38,20 +38,20 @@ log = logging.getLogger(__name__)
 
 _SessionFactory = Callable[[], Any]
 _session_factory: _SessionFactory | None = None
-_storage: MinIOStorage | None = None
+_storage: StorageBackend | None = None
 
 
 def configure_p2c_dependencies(
     *,
     session_factory: _SessionFactory,
-    storage: MinIOStorage,
+    storage: StorageBackend,
 ) -> None:
     global _session_factory, _storage
     _session_factory = session_factory
     _storage = storage
 
 
-def _require_deps() -> tuple[_SessionFactory, MinIOStorage]:
+def _require_deps() -> tuple[_SessionFactory, StorageBackend]:
     if _session_factory is None or _storage is None:
         raise RuntimeError(
             "p2c_check dependencies not configured. "
@@ -189,8 +189,7 @@ async def run_p2c_check(chunk_id: str) -> dict[str, Any]:
             )
             raise DomainError("not_found", f"take not found: {take_id}")
         audio_uri = take.audio_uri
-        # Strip s3://bucket/ prefix to get the MinIO object key
-        audio_key = audio_uri.split("//", 1)[-1].split("/", 1)[-1] if audio_uri.startswith("s3://") else audio_uri
+        audio_key = storage_uri_to_key(audio_uri)
 
         # stage_started
         started_at = datetime.now(timezone.utc)

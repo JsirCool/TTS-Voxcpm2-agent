@@ -44,7 +44,7 @@ from server.core.models import Chunk
 from server.core.p1_logic import script_to_chunks
 from server.core.domain import DomainError
 from server.core.repositories import ChunkRepo, EpisodeRepo
-from server.core.storage import MinIOStorage, episode_script_key
+from server.core.storage import StorageBackend, episode_script_key
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,10 @@ class P1Context:
     """
 
     session_maker: async_sessionmaker[AsyncSession]
-    storage: MinIOStorage
+    storage: StorageBackend
 
 
-async def _load_script(storage: MinIOStorage, episode_id: str) -> dict[str, Any]:
+async def _load_script(storage: StorageBackend, episode_id: str) -> dict[str, Any]:
     key = episode_script_key(episode_id)
     try:
         raw = await storage.download_bytes(key)

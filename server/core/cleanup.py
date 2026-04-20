@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .repositories import EpisodeRepo
-from .storage import MinIOStorage
+from .storage import StorageBackend
 
 _log = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ _log = logging.getLogger(__name__)
 
 async def cleanup_storage(
     session: AsyncSession,
-    storage: MinIOStorage,
+    storage: StorageBackend,
     quota_bytes: int,
     target_bytes: int,
 ) -> list[str]:
@@ -68,7 +68,7 @@ _GB = 1024 ** 3
 
 async def cleanup_if_needed(
     session_factory: async_sessionmaker[AsyncSession],
-    storage: MinIOStorage,
+    storage: StorageBackend,
 ) -> None:
     """Run cleanup check. Swallows all exceptions (best-effort)."""
     try:
