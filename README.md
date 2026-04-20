@@ -1,141 +1,147 @@
-# TTS Agent Harness
+# TTS VoxCPM2 Agent Harness
 
-本项目是一个本地生产工具，用来把 `script.json` 或直接输入的文本转成配音、字幕和 Remotion 友好的导出素材。
+本地优先的 TTS 生产工作台：把脚本、文本、B 站视频或本地音视频素材，变成可审核、可重跑、可导出的配音、字幕和 Remotion 时间轴素材。
 
-This project is a local production tool that turns `script.json` or pasted text into voiceover, subtitles, and Remotion-friendly export assets.
+Local-first TTS production harness for turning scripts, pasted text, Bilibili links, or local media clips into reviewable voiceover, subtitles, and Remotion-friendly exports.
 
-当前分支已经从旧的 `Fish Audio + Groq` 方案改成：
+> 当前版本默认使用 **本地 VoxCPM2 + 本地 WhisperX**，面向 Windows 本地工作流，不依赖云端 TTS 或云端 ASR 服务。
 
-This branch has already been migrated away from the old `Fish Audio + Groq` setup and now uses:
+## Highlights
 
-- TTS: local `VoxCPM` service
-- ASR / verification: local `WhisperX` service
+| 能力 | 说明 |
+|---|---|
+| 本地配音 | 通过本地 `VoxCPM2` HTTP 服务完成 `声音设计 / 可控克隆 / 极致克隆` |
+| 本地复核 | 通过本地 `WhisperX` 做 ASR、字幕、复核和字幕选段 |
+| 素材处理 | 支持本地 `mp4 / mov / mkv / mp3 / wav / m4a`，也支持 B 站公开视频链接导入 |
+| 字幕选段 | 优先使用 B 站原生字幕；没有原生字幕时，用户确认后再启用 WhisperX 自动转写 |
+| 返工工作台 | 支持按 chunk 快捷重跑、Take 历史、人工确认复核、批量处理 |
+| Remotion 导出 | 导出 `shot*.wav`、`episode.wav`、`episode.srt`、`remotion-manifest.json` |
 
-## 架构 / Architecture
-
-```text
-Browser -> Next.js (3010) -> FastAPI (8100) -> Prefect Tasks
-                                             -> PostgreSQL + MinIO
-                                             -> local voxcpm-svc
-                                             -> local whisperx-svc
-```
-
-Pipeline:
+## Architecture
 
 ```text
-P1 -> P1c -> P2 -> P2c -> P2v -> P5 -> P6 -> P6v
+Browser
+  -> Next.js Web (:3010)
+  -> FastAPI API (:8100)
+      -> Prefect tasks
+      -> PostgreSQL + MinIO
+      -> local voxcpm-svc (:8877)
+      -> local whisperx-svc (:7860)
 ```
 
-前端展示中的中文短词对应：
+Pipeline stage labels used in the UI:
 
-The short Chinese labels shown in the UI map to:
+| Stage | UI label | Meaning |
+|---|---|---|
+| `P1` | `切稿` | script splitting |
+| `P1c` | `初检` | initial validation |
+| `P2` | `配音` | voice synthesis |
+| `P2c` | `校音` | audio validation |
+| `P2v` | `复核` | ASR verification |
+| `P5` | `出字` | subtitle generation |
+| `P6` | `拼轨` | final audio concat |
+| `P6v` | `总检` | final validation |
 
-- `P1` -> `切稿`
-- `P1c` -> `初检`
-- `P2` -> `配音`
-- `P2c` -> `校音`
-- `P2v` -> `复核`
-- `P5` -> `出字`
-- `P6` -> `拼轨`
-- `P6v` -> `总检`
+## What Is Not Included In Git
 
-## 仓库不包含的内容 / What Is Not Included In Git
+This repository stores source code, scripts, config templates, and docs only. Large local runtime assets are intentionally not committed.
 
-GitHub 仓库只保存源码、脚本、配置模板和文档，不包含本地运行资产。
+Do not upload these to GitHub:
 
-The GitHub repository contains source code, scripts, config templates, and docs only. It does not include local runtime assets.
+- Python virtual environments, for example `E:\VC\venv312`
+- Hugging Face / WhisperX cache, for example `E:\VC\hf-cache`
+- VoxCPM2 model files, for example `E:\VC\pretrained_models\VoxCPM2`
+- local reference audio under `voice_sourse`
+- logs, storage mirrors, export caches, `node_modules`, and frontend build output
 
-这些内容必须由每台机器自己准备，且不应该上传到 Git：
+Each user must prepare these assets locally before running the full stack.
 
-The following assets must be prepared locally on each machine and should not be committed:
+## Quick Start On Windows
 
-- Python virtual environments such as `E:\VC\venv312`
-- Hugging Face / WhisperX cache such as `E:\VC\hf-cache`
-- VoxCPM model files such as `E:\VC\pretrained_models\VoxCPM2`
-- local reference audio files under `voice_sourse`
-- local logs, export cache, storage mirrors, and build output
+Required software:
 
-## 必须自备的本地资源 / Required Local Assets
+- Docker Desktop
+- Python `3.12`
+- Node.js `18+`
+- `pnpm`
+- `ffmpeg` and `ffprobe`
 
-在第一次启动前，请确认这些资源已经准备好：
-
-Before first startup, make sure these local assets are available:
-
-1. Docker Desktop
-2. Node.js `18+`
-3. `pnpm`
-4. Python `3.12`
-5. `ffmpeg` and `ffprobe`
-6. a working local Python runtime for the harness server and services
-7. a local VoxCPM model directory
-8. a local Hugging Face / WhisperX cache
-
-如果要使用“可控克隆”或“极致克隆”，还需要准备参考音频。
-
-If you want to use controllable cloning or ultimate cloning, you also need local reference audio.
-
-## 安装依赖 / Install Dependencies
-
-最简单的方式，是准备一个统一的 Python 3.12 环境，并让 `scripts/windows/_env.bat` 里的 `VENV_PY` 指向这个环境。
-
-The simplest setup is to prepare one shared Python 3.12 environment and point `VENV_PY` in `scripts/windows/_env.bat` to that environment.
-
-示例：
-
-Example:
+Clone and create your local environment file:
 
 ```powershell
-cd E:\VC\tts-agent-harness
+git clone https://github.com/JsirCool/TTS-Voxcpm2-agent.git
+cd TTS-Voxcpm2-agent
+copy .env.dev .env
+```
+
+Install dependencies into one shared Python environment:
+
+```powershell
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install --upgrade pip
-.venv\Scripts\python.exe -m pip install -e .\server[dev]
-.venv\Scripts\python.exe -m pip install -e .\voxcpm-svc
-.venv\Scripts\python.exe -m pip install -e .\whisperx-svc[dev]
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .\server[dev]
+.\.venv\Scripts\python.exe -m pip install -e .\voxcpm-svc
+.\.venv\Scripts\python.exe -m pip install -e .\whisperx-svc[dev]
 pnpm --dir .\web install
 ```
 
-然后把 `_env.bat` 里的 `VENV_PY` 改成：
+Then edit these two files:
 
-Then update `VENV_PY` in `_env.bat` to:
+- `.env`
+- `scripts/windows/_env.bat`
 
-```text
-E:\VC\tts-agent-harness\.venv\Scripts\python.exe
+At minimum, check:
+
+- `VENV_PY`
+- `VOXCPM_MODEL_PATH`
+- `HF_HOME`
+- `VOXCPM_URL`
+- `WHISPERX_URL`
+- `NEXT_PUBLIC_API_URL`
+
+If your machine does not use a proxy, clear or remove:
+
+- `HTTP_PROXY`
+- `HTTPS_PROXY`
+
+Start everything:
+
+```powershell
+.\start-local-stack.bat
 ```
 
-说明：
+The launcher starts Docker infra, runs migrations, starts VoxCPM / WhisperX / API / Web in the background, and opens:
 
-Notes:
+```text
+http://localhost:3010
+```
 
-- `server` 是 API / workflow / database 相关依赖
-- `voxcpm-svc` 是本地 TTS HTTP 服务
-- `whisperx-svc` 是本地 ASR / verification HTTP 服务
-- `web` 使用 `pnpm`
-- 如果你的 VoxCPM / WhisperX 需要特殊 CUDA / Torch 组合，请按你的机器环境调整，但一键启动脚本默认仍然只会读取一个 `VENV_PY`
+Stop everything:
 
-- `server` contains the API, workflow, and database dependencies
-- `voxcpm-svc` is the local TTS HTTP service
-- `whisperx-svc` is the local ASR / verification HTTP service
-- `web` uses `pnpm`
-- If your VoxCPM / WhisperX setup requires a special CUDA / Torch combination, adjust it for your machine, but note that the current one-click launcher still reads a single `VENV_PY`
+```powershell
+.\stop-local-stack.bat
+```
 
-## 参考音频目录 / Reference Audio Directory
+For visible service windows and logs, use:
 
-当前项目把 `reference_audio_path` 和 `prompt_audio_path` 视为相对路径，默认相对于仓库上一级的 `voice_sourse` 目录解析。
+```powershell
+.\start-local-stack-debug.bat
+```
 
-This project treats `reference_audio_path` and `prompt_audio_path` as relative paths. By default, they are resolved relative to the `voice_sourse` directory located one level above the repository.
+For the detailed Windows guide, see [WINDOWS-START.md](WINDOWS-START.md).
 
-例如：
+## Local Paths
 
-For example:
+Reference audio paths are stored as relative paths and resolved from `voice_sourse`.
+
+Recommended layout:
 
 ```text
 E:\VC\tts-agent-harness
 E:\VC\voice_sourse
 ```
 
-如果配置里写的是：
-
-If your config says:
+Example:
 
 ```json
 {
@@ -143,245 +149,109 @@ If your config says:
 }
 ```
 
-实际会解析到：
-
-It will resolve to:
+Resolves to:
 
 ```text
 E:\VC\voice_sourse\111.m4a
 ```
 
-说明：目录名当前保持为 `voice_sourse`，是为了兼容现有实现和历史数据。
+The directory name is intentionally kept as `voice_sourse` for compatibility with existing local data.
 
-Note: the directory name is intentionally kept as `voice_sourse` for compatibility with the current implementation and existing data.
+## TTS Modes
 
-## 视频/音频转克隆素材 / Video Or Audio To Clone Source
+| Mode | Use case | Required fields |
+|---|---|---|
+| `声音设计 / Voice Design` | Create a voice from text instructions only | `control_prompt` |
+| `可控克隆 / Controllable Cloning` | Keep speaker timbre, optionally control style | `reference_audio_path`, optional `control_prompt` |
+| `极致克隆 / Ultimate Cloning` | Continue from a prompt clip with high detail | `prompt_audio_path`, `prompt_text` |
 
-现在可以直接在前端 `TTS 配置` 旁边打开 `素材处理` 弹窗，把本地 `mp4 / mov / mkv / mp3 / wav / m4a` 片段裁剪成可用于 VoxCPM 的克隆素材。
-You can now open the `素材处理` dialog next to `TTS 配置` and turn a local `mp4 / mov / mkv / mp3 / wav / m4a` clip into a VoxCPM-ready clone source.
+Parameter isolation is enforced before synthesis:
 
-第一版支持两档处理：
-The first version supports two cleanup levels:
+- `声音设计` clears audio reference fields.
+- `可控克隆` clears `prompt_audio_path` and `prompt_text`.
+- `极致克隆` clears `reference_audio_path` and `control_prompt`.
+- Per-chunk overrides do not leak into incompatible modes.
 
-- `轻量稳定 / light`
-  - 只依赖 `ffmpeg` / `ffprobe`
-  - 裁剪片段、抽取音频、单声道、重采样、响度规范、轻降噪
-- `重度人声分离 / vocal_isolate`
-  - 额外依赖本地 `Demucs`
-  - 先做人声分离，再输出更干净的参考片段
+For `极致克隆`, the most important stability factor is exact alignment between the prompt audio and `prompt_text`. In the media dialog, `15s` is treated as the recommended range and `40s` as the hard limit.
 
-输出规则固定为：
-Output rules:
+## New Episode Input
 
-- 内部标准输出始终是 `WAV`
-- 输出目录始终在 `voice_sourse/imported/`
-- 文件名会包含时间戳、裁剪区间和清理模式，避免覆盖旧素材
+You can create an Episode in two ways:
 
-套用到当前 Episode 时：
-When you apply the processed clip to the current Episode:
+1. Upload a `script.json`.
+2. Paste plain text and let the app convert it into internal JSON.
 
-- `可控克隆 / controllable_cloning`
-  - 写入 `reference_audio_path`
-  - 自动清掉 `prompt_audio_path` 和 `prompt_text`
-- `极致克隆 / ultimate_cloning`
-  - 写入 `prompt_audio_path` 和自动生成的 `prompt_text`
-  - 自动清掉 `reference_audio_path` 和 `control_prompt`
-
-自动转写说明：
-Automatic transcription notes:
-
-- `极致克隆` 会调用本地 `WhisperX` 生成 `prompt_text`
-- 生成后会先在弹窗里展示，你可以手工编辑确认后再套用
-- 如果 `WhisperX` 不可用，前端会禁用 `极致克隆` 套用模式
-
-依赖要求：
-Dependencies:
-
-- 基础版必须有：`ffmpeg`、`ffprobe`
-- 重度分离额外需要：`Demucs`
-- 自动生成 `prompt_text` 需要：本地 `WhisperX` 服务可用
-
-## 最短启动步骤 / Shortest Startup Path
-
-如果你是 Windows 用户，最短启动步骤如下：
-
-If you are on Windows, the shortest startup path is:
-
-1. Clone the repository.
-2. Copy `.env.dev` to `.env`.
-3. Edit `.env` and `scripts/windows/_env.bat`.
-4. Make sure your local paths are correct.
-5. Double-click `start-local-stack.bat`.
-6. Open `http://localhost:3010`.
-
-PowerShell 示例：
-
-PowerShell example:
-
-```powershell
-git clone <your-repo-url>
-cd tts-agent-harness
-copy .env.dev .env
-```
-
-启动前至少检查这几个值：
-
-At minimum, verify these values before startup:
-
-- `.env`
-  - `VOXCPM_MODEL_PATH`
-  - `VOXCPM_URL`
-  - `WHISPERX_URL`
-  - `DATABASE_URL`
-  - `MINIO_ENDPOINT`
-- `scripts/windows/_env.bat`
-  - `VENV_PY`
-  - `HF_HOME`
-  - `WEB_PM`
-
-如果你的机器不使用代理，请清空或删除：
-
-If your machine does not use an HTTP proxy, clear or remove:
-
-- `HTTP_PROXY`
-- `HTTPS_PROXY`
-
-## Windows 一键启动 / Windows One-Click Start
-
-直接双击：
-
-Double-click:
-
-- [start-local-stack.bat](/E:/VC/tts-agent-harness/start-local-stack.bat)
-
-它会执行：
-
-It will:
-
-1. start Docker infra: Postgres + MinIO
-2. run Alembic migrations
-3. check Web dependencies
-4. open separate windows for:
-   - VoxCPM
-   - WhisperX
-   - API
-   - Web
-5. open the browser at `http://localhost:3010`
-
-停止时双击：
-
-To stop everything, double-click:
-
-- [stop-local-stack.bat](/E:/VC/tts-agent-harness/stop-local-stack.bat)
-
-如果你想看到启动过程中卡在哪一步，不要直接双击，而是运行：
-
-If you want to keep the startup window open for debugging, run:
-
-```powershell
-cmd /k E:\VC\tts-agent-harness\start-local-stack.bat
-```
-
-## 单独启动服务 / Start Services Individually
-
-你也可以只启动某一个服务：
-
-You can also start a single service only:
-
-- [scripts/windows/run-voxcpm-svc.bat](/E:/VC/tts-agent-harness/scripts/windows/run-voxcpm-svc.bat)
-- [scripts/windows/run-whisperx-svc.bat](/E:/VC/tts-agent-harness/scripts/windows/run-whisperx-svc.bat)
-- [scripts/windows/run-api.bat](/E:/VC/tts-agent-harness/scripts/windows/run-api.bat)
-- [scripts/windows/run-web.bat](/E:/VC/tts-agent-harness/scripts/windows/run-web.bat)
-
-## 本地服务说明 / Local Services
-
-### VoxCPM
-
-`P2` 不再直接在 harness server 里加载模型，而是通过本地 HTTP 服务调用 `VoxCPM`。
-
-`P2` no longer loads the model directly inside the harness server. It calls a local `VoxCPM` HTTP service instead.
-
-默认地址：
-
-Default endpoint:
-
-- `VOXCPM_URL=http://127.0.0.1:8877`
-
-相关文件：
-
-Relevant files:
-
-- [voxcpm-svc/server.py](/E:/VC/tts-agent-harness/voxcpm-svc/server.py)
-- [server/core/voxcpm_client.py](/E:/VC/tts-agent-harness/server/core/voxcpm_client.py)
-
-### WhisperX
-
-`P2v` 和 `P3` 默认走本地 WhisperX 服务。
-
-`P2v` and `P3` use a local WhisperX service by default.
-
-默认地址：
-
-Default endpoint:
-
-- `WHISPERX_URL=http://127.0.0.1:7860`
-
-## TTS 配置 / TTS Configuration
-
-当前主要字段：
-
-Main fields:
-
-- `cfg_value`
-- `inference_timesteps`
-- `control_prompt`
-- `reference_audio_path`
-- `prompt_audio_path`
-- `prompt_text`
-- `normalize`
-- `denoise`
-
-三种常见模式：
-
-Three common modes:
-
-1. `声音设计 / Voice Design`
-   - only `control_prompt`
-2. `可控克隆 / Controllable Cloning`
-   - `reference_audio_path` plus optional `control_prompt`
-3. `极致克隆 / Ultimate Cloning`
-   - `prompt_audio_path` + `prompt_text`
-
-示例：
-
-Example:
+Minimal script format:
 
 ```json
 {
   "title": "Episode Title",
-  "tts_config": {
-    "cfg_value": 2.0,
-    "inference_timesteps": 10,
-    "control_prompt": "young female voice, warm and gentle",
-    "reference_audio_path": "111.m4a",
-    "normalize": false,
-    "denoise": false
-  },
   "segments": [
-    { "id": 1, "type": "hook", "text": "要朗读的文本" }
+    { "id": 1, "type": "hook", "text": "第一段旁白。" },
+    { "id": 2, "type": "content", "text": "第二段旁白。" }
   ]
 }
 ```
 
-## 导出格式 / Export Format
+`segment` is the human-facing shot unit. The system splits each segment into smaller synthesis chunks.
 
-导出结果现在同时包含按 shot 拆分的音频，以及整集拼接完成的音频和字幕。
+## Media-To-Clone Workflow
 
-Exports now include both per-shot audio files and the final concatenated episode audio and subtitle.
+Open `素材处理` next to `TTS 配置`.
+
+Supported inputs:
+
+- local files: `mp4`, `mov`, `mkv`, `mp3`, `wav`, `m4a`
+- public Bilibili links: `bilibili.com/video/BV...`, `bilibili.com/video/av...`, `b23.tv/...`
+
+Workflow:
+
+1. Import local media or paste a Bilibili link.
+2. Preview the media.
+3. Resolve subtitles:
+   - Bilibili native subtitles are used first when available.
+   - If native subtitles are missing, the UI asks before running WhisperX.
+   - WhisperX uses auto language detection; Chinese remains Chinese, English remains English.
+4. Select a continuous subtitle range or manually adjust start/end time.
+5. Name the voice asset, for example `小A的声音`.
+6. Choose cleanup:
+   - `轻量稳定 / light`: ffmpeg trim, mono, resample, loudness normalization, light denoise.
+   - `重度人声分离 / vocal_isolate`: Demucs vocal isolation, then normalization.
+7. Preview:
+   - original selected clip
+   - processed voice asset
+   - fixed trial synthesis sample
+8. Apply to the current Episode only after you are satisfied.
+
+Generated voice assets are saved under:
+
+```text
+voice_sourse/assets/<voice-name>/
+```
+
+Bilibili source cache is saved under:
+
+```text
+voice_sourse/imported/bilibili/
+```
+
+Current Bilibili v1 limitations:
+
+- public videos only
+- no login cookies
+- no VIP / paid / protected content
+- no livestreams
+- no playlist or collection batch import
+
+## Export Format
+
+Exports include both per-shot files and final assembled files:
 
 ```text
 episode.zip/
-  shot01.wav, shot02.wav, ...
+  shot01.wav
+  shot02.wav
+  ...
   episode.wav
   episode.srt
   subtitles.json
@@ -389,61 +259,62 @@ episode.zip/
   remotion-manifest.json
 ```
 
-其中：
+`remotion-manifest.json` contains timing metadata such as shot order, start/end time, frames, audio file names, and subtitle cues.
 
-Where:
+You can also export to a local directory from the UI.
 
-- `shotXX.wav` is per-shot audio
-- `episode.wav` is the fully concatenated episode audio
-- `episode.srt` is the merged final subtitle file
-- `remotion-manifest.json` contains Remotion-friendly timing metadata
+## Common URLs
 
-## 常用地址 / Common URLs
+| Service | URL |
+|---|---|
+| Web | `http://localhost:3010` |
+| API | `http://localhost:8100` |
+| API docs | `http://localhost:8100/docs` |
+| VoxCPM health | `http://127.0.0.1:8877/healthz` |
+| WhisperX health | `http://127.0.0.1:7860/healthz` |
+| MinIO console | `http://localhost:59001` |
+| Prefect | `http://localhost:54200` |
 
-- Web: `http://localhost:3010`
-- API: `http://localhost:8100`
-- API docs: `http://localhost:8100/docs`
-- VoxCPM health: `http://127.0.0.1:8877/healthz`
-- WhisperX health: `http://127.0.0.1:7860/healthz`
-- MinIO console: `http://localhost:59001`
+## Useful Commands
 
-## 测试 / Tests
+Run backend tests:
 
 ```powershell
-cd server
-python -m pytest tests/ -x
-
-cd ..\web
-pnpm exec tsc --noEmit
+.\.venv\Scripts\python.exe -m pytest .\server\tests -q
 ```
 
-## Bilibili Import / B 站链接导入
+Type-check the frontend:
 
-You can now open `素材处理` next to `TTS 配置` and choose either:
+```powershell
+pnpm --dir .\web exec tsc --noEmit
+```
 
-- `本地文件`
-- `B 站链接`
+Check local API health:
 
-When using a Bilibili link, the dialog supports:
+```powershell
+curl http://127.0.0.1:8100/healthz
+curl http://127.0.0.1:8100/readyz
+```
 
-- pasting a public `bilibili.com/video/BV...`, `.../av...`, or `b23.tv/...` link
-- choosing `下载视频` or `仅下载音频`
-- downloading the source into `voice_sourse/imported/bilibili/...`
-- previewing and trimming the downloaded media in the same dialog
-- continuing through the existing cleanup, WhisperX transcript, and Episode apply flow
+## Troubleshooting
 
-Current v1 limitations:
+| Symptom | What to check |
+|---|---|
+| Web loads but Episode fetch fails | API on `8100` is probably down. Open `http://127.0.0.1:8100/healthz`. |
+| VoxCPM errors during synthesis | Check mode fields. `极致克隆` needs accurate `prompt_text`; try `可控克隆` for longer or noisy samples. |
+| WhisperX subtitle fallback is slow | This is expected for long media. The UI asks before starting WhisperX because it can take time. |
+| Docker containers seem missing | `stop-local-stack.bat` now uses `stop`, not `down`; containers should remain visible as `Exited`. |
+| Bilibili import fails | Only public videos are supported. Private, paid, login-only, and VIP content are out of scope for v1. |
 
-- public videos only
-- no login cookies
-- no VIP / paid / protected content
-- no batch playlists or multi-video collections
+## Third-Party Notice
 
-Implementation note:
+This repository includes a minimal adapted subset of Bilibili import logic derived from `Bili23 Downloader`.
 
-- This repository now includes a minimal adapted subset of logic derived from `Bili23 Downloader`
-- See `third_party/bili23/NOTICE.md`
-- The repository license is now GPL-3.0 compatible because of this source integration
+See:
+
+- [third_party/bili23/NOTICE.md](third_party/bili23/NOTICE.md)
+
+Because of this source integration, the repository is distributed under a GPL-3.0 compatible license.
 
 ## License
 
