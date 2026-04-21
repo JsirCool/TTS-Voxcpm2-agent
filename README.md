@@ -27,6 +27,26 @@
 | Chunk 空隙编辑 | 支持调节 chunk 与下一个 chunk 之间的间隙，支持负值重叠和拼接预览 |
 | 导出能力 | 可导出 `shot*.wav`、整集 `episode.wav`、字幕、durations 和 Remotion manifest |
 
+## 界面截图
+
+### 1. 主工作台
+
+展示 episode、TTS 配置、阶段状态和 chunk 列表，适合日常配音返工与复核。
+
+![主工作台](docs/screenshots/workbench-overview.png)
+
+### 2. Chunk 空隙编辑
+
+可以直接调整 chunk 与下一个 chunk 的拼接间隙，支持正值静音、负值重叠和边界预览。
+
+![Chunk 空隙编辑](docs/screenshots/chunk-gap-editor.png)
+
+### 3. 素材处理与波形切段
+
+支持导入本地音视频或 B 站素材，在第二步里用波形切点、缩放和平移来精修选段。
+
+![素材处理与波形切段](docs/screenshots/media-waveform-editor.png)
+
 ## 系统架构
 
 ```text
