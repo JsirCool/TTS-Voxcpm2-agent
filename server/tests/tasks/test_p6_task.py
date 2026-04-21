@@ -254,6 +254,35 @@ async def test_run_p6_concat_end_to_end(tmp_path: Path, session: AsyncSession):
 
 @ffmpeg_required
 @pytest.mark.asyncio
+async def test_run_p6_concat_renders_negative_gap_overlap(tmp_path: Path, session: AsyncSession):
+    storage = FakeStorage()
+    specs = [
+        ("ep-gap:c1", "shot01", 0, 1.0, ""),
+        ("ep-gap:c2", "shot01", 1, 0.6, ""),
+        ("ep-gap:c3", "shot02", 0, 0.8, ""),
+    ]
+    await _seed_episode(session, storage, tmp_path, "ep-gap", specs)
+    await ChunkRepo(session).set_next_gap_ms("ep-gap:c1", -300)
+    await session.commit()
+
+    result = await run_p6_concat(
+        "ep-gap",
+        padding_ms=200,
+        shot_gap_ms=500,
+        session=session,
+        storage=storage,  # type: ignore[arg-type]
+    )
+
+    assert result.total_duration_s == pytest.approx(2.6)
+    wav_bytes = storage._objects["episodes/ep-gap/final/episode.wav"]
+    out_wav = tmp_path / "final-gap.wav"
+    out_wav.write_bytes(wav_bytes)
+    probed = await probe_duration_s(out_wav)
+    assert probed == pytest.approx(2.6, abs=0.04)
+
+
+@ffmpeg_required
+@pytest.mark.asyncio
 async def test_run_p6_concat_rejects_missing_selected_take(
     tmp_path: Path, session: AsyncSession
 ):

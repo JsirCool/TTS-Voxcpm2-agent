@@ -5,6 +5,7 @@ Best-effort: failures are logged but never propagate to callers.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -15,6 +16,20 @@ from .repositories import EpisodeRepo
 from .storage import StorageBackend
 
 _log = logging.getLogger(__name__)
+
+async def _await_if_needed(value: object) -> object:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _coerce_size_bytes(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Core logic
@@ -31,7 +46,10 @@ async def cleanup_storage(
 
     Returns list of deleted episode IDs.
     """
-    current = await storage.get_bucket_size_bytes()
+    current = _coerce_size_bytes(await _await_if_needed(storage.get_bucket_size_bytes()))
+    if current is None:
+        _log.warning("storage get_bucket_size_bytes returned a non-numeric value; skip cleanup")
+        return []
     if current <= quota_bytes:
         _log.debug("storage %d bytes <= quota %d, skip cleanup", current, quota_bytes)
         return []
@@ -46,12 +64,19 @@ async def cleanup_storage(
         if current <= target_bytes:
             break
         prefix = f"episodes/{ep.id}/"
-        n = await storage.delete_prefix(prefix)
+        deleted_raw = await _await_if_needed(storage.delete_prefix(prefix))
+        n = _coerce_size_bytes(deleted_raw)
+        if n is None:
+            n = 0
         await repo.delete(ep.id)
         await session.flush()
         _log.info("cleaned up episode %s (%d objects)", ep.id, n)
         deleted_ids.append(ep.id)
-        current = await storage.get_bucket_size_bytes()
+        next_size = _coerce_size_bytes(await _await_if_needed(storage.get_bucket_size_bytes()))
+        if next_size is None:
+            _log.warning("storage get_bucket_size_bytes returned a non-numeric value after deletion; stop cleanup")
+            break
+        current = next_size
 
     if deleted_ids:
         await session.commit()

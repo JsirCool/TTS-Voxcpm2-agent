@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from array import array
 import importlib.util
 import json
 import re
@@ -75,6 +76,12 @@ class TrialSynthesisResult:
     preview_relative_path: str
     duration_s: float
     sample_text: str
+
+
+@dataclass
+class MediaWaveformResult:
+    duration_s: float
+    peaks: list[float]
 
 
 def _utc_stamp() -> str:
@@ -401,6 +408,101 @@ def _extract_full_audio_for_transcription(source_path: Path, output_path: Path) 
     )
 
 
+def build_media_waveform(source_path: Path, *, bins: int = 2400) -> MediaWaveformResult:
+    probe = probe_media(source_path)
+    ffmpeg = _require_ffmpeg()
+    normalized_bins = max(128, min(int(bins), 4800))
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "8000",
+            "-f",
+            "s16le",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or b"").decode("utf-8", errors="replace").strip()
+        raise DomainError(
+            "media_process_failed",
+            f"ffmpeg waveform extraction failed: {(detail or 'unknown error')[:400]}",
+        )
+
+    samples = array("h")
+    samples.frombytes(completed.stdout or b"")
+    if sys.byteorder != "little":
+        samples.byteswap()
+
+    if len(samples) == 0:
+        return MediaWaveformResult(duration_s=probe.duration_s, peaks=[0.0] * normalized_bins)
+
+    step = len(samples) / normalized_bins
+    peaks: list[float] = []
+    for index in range(normalized_bins):
+        start = int(index * step)
+        end = int((index + 1) * step)
+        if end <= start:
+            end = min(len(samples), start + 1)
+        peak = 0
+        for sample in samples[start:end]:
+            magnitude = abs(sample)
+            if magnitude > peak:
+                peak = magnitude
+        peaks.append(round(min(1.0, peak / 32768.0), 4))
+
+    return MediaWaveformResult(duration_s=probe.duration_s, peaks=peaks)
+
+
+def build_selection_preview_audio(source_path: Path, *, start_s: float, end_s: float) -> bytes:
+    metadata = probe_media(source_path)
+    start_s, end_s = validate_trim_bounds(metadata.duration_s, start_s, end_s)
+    ffmpeg = _require_ffmpeg()
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-ss",
+            f"{start_s:.3f}",
+            "-to",
+            f"{end_s:.3f}",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or b"").decode("utf-8", errors="replace").strip()
+        raise DomainError(
+            "media_process_failed",
+            f"ffmpeg selection preview failed: {(detail or 'unknown error')[:400]}",
+        )
+    if not completed.stdout:
+        raise DomainError("media_process_failed", "selection preview audio is empty")
+    return completed.stdout
+
+
 def _normalize_audio(input_path: Path, output_path: Path, *, cleanup_mode: CleanupMode) -> None:
     ffmpeg = _require_ffmpeg()
     filters = ["highpass=f=80", "lowpass=f=7600"]
@@ -648,6 +750,13 @@ async def transcribe_audio_for_prompt(audio_path: Path, *, whisperx_url: str) ->
     return text.strip()
 
 
+async def transcribe_source_audio_for_prompt(source_path: Path, *, whisperx_url: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="tts-prompt-transcribe-") as temp_dir:
+        working_audio = Path(temp_dir) / "prompt.wav"
+        await asyncio.to_thread(_extract_full_audio_for_transcription, source_path, working_audio)
+        return await transcribe_audio_for_prompt(working_audio, whisperx_url=whisperx_url)
+
+
 async def resolve_whisperx_subtitles(
     source_path: Path,
     *,
@@ -754,6 +863,7 @@ __all__ = [
     "resolve_voice_library_path",
     "resolve_whisperx_subtitles",
     "transcribe_audio_for_prompt",
+    "transcribe_source_audio_for_prompt",
     "validate_trim_bounds",
     "voice_source_root",
     "write_trial_audio",

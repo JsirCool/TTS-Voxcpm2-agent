@@ -54,6 +54,7 @@ export interface Chunk {
   subtitleText: string | null;
   status: ChunkStatus;
   selectedTakeId: TakeId | null;
+  nextGapMs?: number | null;
   boundaryHash?: string;
   charCount: number;
   lastEditedAt?: string;

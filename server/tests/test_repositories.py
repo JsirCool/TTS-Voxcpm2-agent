@@ -175,6 +175,19 @@ class TestChunkRepo:
         assert c.status == "synth_done"
         assert c.selected_take_id == "take-xyz"
 
+    async def test_set_next_gap_ms(self, session):
+        ep = await _make_episode(session)
+        ids = await _make_chunks(session, ep, n=1)
+        repo = ChunkRepo(session)
+        assert await repo.set_next_gap_ms(ids[0], -250)
+        c = await repo.get(ids[0])
+        assert c is not None
+        assert c.next_gap_ms == -250
+        assert await repo.set_next_gap_ms(ids[0], None)
+        c = await repo.get(ids[0])
+        assert c is not None
+        assert c.next_gap_ms is None
+
 
 # ---------------------------------------------------------------------------
 # TakeRepo
@@ -243,6 +256,42 @@ class TestStageRunRepo:
         assert row2.duration_ms == 1234
         # Still attempt=1 (not overridden).
         assert row2.attempt == 1
+
+    async def test_upsert_clears_error_when_stage_recovers(self, session):
+        ep = await _make_episode(session)
+        ids = await _make_chunks(session, ep, n=1)
+        repo = StageRunRepo(session)
+
+        await repo.upsert(
+            chunk_id=ids[0],
+            stage="p5",
+            status="failed",
+            duration_ms=321,
+            error="missing transcript",
+        )
+        await session.commit()
+
+        running = await repo.upsert(
+            chunk_id=ids[0],
+            stage="p5",
+            status="running",
+            started_at=datetime.now(timezone.utc),
+        )
+        await session.commit()
+        assert running.error is None
+        assert running.finished_at is None
+        assert running.duration_ms is None
+
+        recovered = await repo.upsert(
+            chunk_id=ids[0],
+            stage="p5",
+            status="ok",
+            duration_ms=123,
+        )
+        await session.commit()
+        assert recovered.error is None
+        assert recovered.status == "ok"
+        assert recovered.duration_ms == 123
 
     async def test_get_missing_returns_none(self, session):
         repo = StageRunRepo(session)

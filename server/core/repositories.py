@@ -213,6 +213,15 @@ class ChunkRepo:
         res = await self.session.execute(stmt)
         return (res.rowcount or 0) > 0
 
+    async def set_next_gap_ms(self, chunk_id: str, next_gap_ms: int | None) -> bool:
+        stmt = (
+            update(Chunk)
+            .where(Chunk.id == chunk_id)
+            .values(next_gap_ms=next_gap_ms)
+        )
+        res = await self.session.execute(stmt)
+        return (res.rowcount or 0) > 0
+
 
 # ---------------------------------------------------------------------------
 # Takes
@@ -350,11 +359,14 @@ class StageRunRepo:
             existing.attempt = attempt
         if started_at is not None:
             existing.started_at = started_at
+        if status == "running":
+            existing.finished_at = None
+            existing.duration_ms = None
         if finished_at is not None:
             existing.finished_at = finished_at
         if duration_ms is not None:
             existing.duration_ms = duration_ms
-        if error is not None:
+        if error is not None or status in {"running", "ok"}:
             existing.error = error
         if log_uri is not None:
             existing.log_uri = log_uri

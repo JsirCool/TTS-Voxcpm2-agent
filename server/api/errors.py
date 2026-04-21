@@ -37,6 +37,7 @@ _STATUS_MAP: dict[str, int] = {
     "subtitle_requires_whisperx": 409,
     "subtitle_unavailable": 409,
     "bilibili_unavailable": 409,
+    "cancelled": 409,
     "voxcpm_unavailable": 409,
     "media_probe_failed": 500,
     "media_process_failed": 500,

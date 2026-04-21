@@ -53,7 +53,11 @@ def ensure_desktop_directories() -> Path:
 
 async def ensure_sqlite_schema(engine: AsyncEngine) -> None:
     from server.core.models import Base
+    from sqlalchemy import text
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
+        result = await conn.execute(text("PRAGMA table_info(chunks)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "next_gap_ms" not in columns:
+            await conn.execute(text("ALTER TABLE chunks ADD COLUMN next_gap_ms INTEGER"))

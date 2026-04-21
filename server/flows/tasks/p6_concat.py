@@ -34,20 +34,15 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from prefect import task
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.core import events as events_module
 from server.core.domain import DomainError, P6Result
 from server.core.p6_logic import (
     ChunkTiming,
-    build_ffmpeg_concat_list,
-    compute_chunk_offsets,
-    compute_gap_sequence,
-    compute_total_duration,
-    generate_silence,
-    interleave_with_silences,
+    compute_timeline_layout,
     merge_srt_files,
-    run_ffmpeg_concat,
+    run_ffmpeg_timeline_mix,
     sort_chunk_timings,
 )
 from server.core.repositories import ChunkRepo, EpisodeRepo, TakeRepo
@@ -139,8 +134,8 @@ def _get_storage() -> StorageBackend:
 async def run_p6_concat(
     episode_id: str,
     *,
-    padding_ms: int = 200,
-    shot_gap_ms: int = 500,
+    padding_ms: int = 0,
+    shot_gap_ms: int = 0,
     session: AsyncSession,
     storage: StorageBackend,
     workdir: Path | None = None,
@@ -209,6 +204,7 @@ async def run_p6_concat(
                 shot_id=c.shot_id,
                 idx=c.idx,
                 duration_s=float(take.duration_s or 0.0),
+                next_gap_ms=getattr(c, "next_gap_ms", None),
             )
         )
 
@@ -245,6 +241,7 @@ async def run_p6_concat(
             "chunk_count": len(timings),
             "padding_ms": padding_ms,
             "shot_gap_ms": shot_gap_ms,
+            "custom_gap_count": sum(1 for t in timings if t.next_gap_ms is not None),
             "started_at": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -253,9 +250,9 @@ async def run_p6_concat(
     # ------------------------------------------------------------------
     # Download + ffmpeg concat inside a temp workdir
     # ------------------------------------------------------------------
-    offsets = compute_chunk_offsets(timings, padding_s, shot_gap_s)
-    gaps = compute_gap_sequence(timings, padding_s, shot_gap_s)
-    total_duration = compute_total_duration(timings, padding_s, shot_gap_s)
+    layout = compute_timeline_layout(timings, padding_s, shot_gap_s)
+    offsets = layout.offsets
+    total_duration = layout.total_duration_s
 
     cleanup_tmp = workdir is None
     work_root = Path(workdir or tempfile.mkdtemp(prefix=f"p6-{episode_id}-"))
@@ -286,22 +283,8 @@ async def run_p6_concat(
                 # No subtitle for this chunk → contribute empty SRT.
                 srt_strings.append("")
 
-        # Generate unique silence segments.
-        silence_files: dict[float, Path] = {}
-        for gap in set(gaps):
-            if gap <= 0:
-                continue
-            sil_path = work_root / f"silence_{int(round(gap * 1000))}.wav"
-            await generate_silence(sil_path, gap)
-            silence_files[gap] = sil_path
-
-        interleaved = interleave_with_silences(audio_paths, gaps, silence_files)
-        concat_body = build_ffmpeg_concat_list(interleaved)
-        list_file = work_root / "concat.txt"
-        list_file.write_text(concat_body, encoding="utf-8")
-
         wav_out = work_root / "episode.wav"
-        await run_ffmpeg_concat(list_file, wav_out)
+        await run_ffmpeg_timeline_mix(audio_paths, offsets, wav_out)
 
         # Merge SRTs in pure-Python.
         merged_srt = merge_srt_files(srt_strings, offsets)
@@ -366,7 +349,7 @@ async def run_p6_concat(
 async def p6_concat(
     episode_id: str,
     padding_ms: int = 200,
-    shot_gap_ms: int = 500,
+    shot_gap_ms: int = 200,
 ) -> P6Result:
     """Prefect entry point. Owns DB session + MinIO client lifecycle."""
     storage = _get_storage()

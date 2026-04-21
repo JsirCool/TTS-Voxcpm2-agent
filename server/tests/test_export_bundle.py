@@ -4,6 +4,7 @@ import io
 import shutil
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -14,7 +15,7 @@ from server.core.export_bundle import build_export_bundle
 from server.core.models import Base
 from server.core.p6_logic import generate_silence
 from server.core.repositories import ChunkRepo, EpisodeRepo, TakeRepo
-from server.core.storage import chunk_subtitle_key, chunk_take_key
+from server.core.storage import LocalFSStorage, chunk_subtitle_key, chunk_take_key
 
 
 ffmpeg_required = pytest.mark.skipif(
@@ -56,7 +57,7 @@ async def session() -> AsyncSession:
     await engine.dispose()
 
 
-async def _seed_export_data(session: AsyncSession, storage: FakeStorage, tmp_path: Path) -> list:
+async def _seed_export_data(session: AsyncSession, storage: Any, tmp_path: Path) -> list:
     ep_repo = EpisodeRepo(session)
     chunk_repo = ChunkRepo(session)
     take_repo = TakeRepo(session)
@@ -92,12 +93,12 @@ async def _seed_export_data(session: AsyncSession, storage: FakeStorage, tmp_pat
         take_id = f"{chunk_id}-take1"
         wav_path = tmp_path / f"{chunk_id.replace(':', '_')}.wav"
         await generate_silence(wav_path, duration_s)
-        await storage.upload_file(chunk_take_key("ep-export", chunk_id, take_id), wav_path)
+        audio_uri = await storage.upload_file(chunk_take_key("ep-export", chunk_id, take_id), wav_path)
         await take_repo.append(
             TakeAppend(
                 id=take_id,
                 chunk_id=chunk_id,
-                audio_uri=f"s3://test/{chunk_take_key('ep-export', chunk_id, take_id)}",
+                audio_uri=audio_uri,
                 duration_s=duration_s,
             )
         )
@@ -138,14 +139,76 @@ async def test_build_export_bundle_includes_final_episode_assets(
     assert bundle.manifest["finalAudioFile"] == "episode.wav"
     assert bundle.manifest["finalSubtitleFile"] == "episode.srt"
     assert bundle.manifest["shotCount"] == 2
-    assert bundle.manifest["shots"][1]["startS"] == pytest.approx(0.9, abs=0.01)
-    assert bundle.manifest["totalDurationS"] == pytest.approx(1.5, abs=0.05)
+    assert bundle.manifest["shots"][1]["startS"] == pytest.approx(0.4, abs=0.01)
+    assert bundle.manifest["totalDurationS"] == pytest.approx(1.0, abs=0.05)
 
     with io.BytesIO(bundle.files["episode.wav"]) as wav_buffer:
         with wave.open(wav_buffer) as wav_file:
             duration_s = wav_file.getnframes() / wav_file.getframerate()
-    assert duration_s == pytest.approx(1.5, abs=0.05)
+    assert duration_s == pytest.approx(1.0, abs=0.05)
 
     episode_srt = bundle.files["episode.srt"].decode("utf-8").replace("\r\n", "\n")
     assert "1\n00:00:00,000 --> 00:00:00,300\nAlpha" in episode_srt
-    assert "2\n00:00:00,900 --> 00:00:01,200\nBeta" in episode_srt
+    assert "2\n00:00:00,400 --> 00:00:00,700\nBeta" in episode_srt
+
+
+@ffmpeg_required
+@pytest.mark.asyncio
+async def test_build_export_bundle_respects_custom_gap(
+    tmp_path: Path,
+    session: AsyncSession,
+):
+    storage = FakeStorage()
+    await _seed_export_data(session, storage, tmp_path)
+    await ChunkRepo(session).set_next_gap_ms("ep-export:shot01:1", -200)
+    await session.commit()
+    chunks = list(await ChunkRepo(session).list_by_episode("ep-export"))
+    take_repo = TakeRepo(session)
+
+    bundle = await build_export_bundle(
+        episode_id="ep-export",
+        chunks=chunks,
+        take_repo=take_repo,
+        storage=storage,  # type: ignore[arg-type]
+        episode_title="Export episode",
+        cache_key="test-cache-gap",
+    )
+
+    assert bundle.manifest["chunks"][0]["nextGapMs"] == -200
+    assert bundle.manifest["chunks"][0]["effectiveGapMs"] == -200
+    assert bundle.manifest["shots"][1]["startS"] == pytest.approx(0.2, abs=0.01)
+    assert bundle.manifest["totalDurationS"] == pytest.approx(0.8, abs=0.05)
+
+    with io.BytesIO(bundle.files["episode.wav"]) as wav_buffer:
+        with wave.open(wav_buffer) as wav_file:
+            duration_s = wav_file.getnframes() / wav_file.getframerate()
+    assert duration_s == pytest.approx(0.8, abs=0.05)
+
+
+@ffmpeg_required
+@pytest.mark.asyncio
+async def test_build_export_bundle_falls_back_to_localfs_for_local_takes(
+    tmp_path: Path,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    storage_root = tmp_path / "storage"
+    monkeypatch.setenv("HARNESS_LOCAL_STORAGE_DIR", str(storage_root))
+    local_storage = LocalFSStorage(storage_root, "tts-harness")
+    chunks = await _seed_export_data(session, local_storage, tmp_path)
+    take_repo = TakeRepo(session)
+
+    bundle = await build_export_bundle(
+        episode_id="ep-export",
+        chunks=chunks,
+        take_repo=take_repo,
+        storage=FakeStorage("tts-harness"),  # type: ignore[arg-type]
+        episode_title="Export episode",
+        cache_key="test-cache",
+    )
+
+    assert "shot01.wav" in bundle.files
+    assert "shot02.wav" in bundle.files
+    episode_srt = bundle.files["episode.srt"].decode("utf-8").replace("\r\n", "\n")
+    assert "Alpha" in episode_srt
+    assert "Beta" in episode_srt

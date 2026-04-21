@@ -40,8 +40,8 @@ async def run_episode_flow(
     mode: str = "synthesize",
     chunk_ids: list[str] | None = None,
     language: str = "zh",
-    padding_ms: int = 200,
-    shot_gap_ms: int = 500,
+    padding_ms: int = 0,
+    shot_gap_ms: int = 0,
 ) -> dict[str, Any]:
     """Orchestrate the TTS pipeline for one episode.
 

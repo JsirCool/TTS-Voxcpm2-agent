@@ -10,6 +10,7 @@ from server.core.media_processing import (
     demucs_status,
     resolve_whisperx_subtitles,
     transcribe_audio_for_prompt,
+    transcribe_source_audio_for_prompt,
     validate_trim_bounds,
 )
 
@@ -98,3 +99,34 @@ async def test_transcribe_audio_for_prompt_uses_auto_language(monkeypatch: pytes
 
     assert captured == ["auto"]
     assert text == "你好"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_source_audio_for_prompt_extracts_working_wav(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    extracted: list[tuple[Path, str]] = []
+    transcribed: list[Path] = []
+
+    def _fake_extract(source: Path, output: Path) -> None:
+        extracted.append((source, output.name))
+        output.write_bytes(b"RIFFdemo")
+
+    async def _fake_transcribe(audio_path: Path, *, whisperx_url: str):
+        transcribed.append(audio_path)
+        assert audio_path.name == "prompt.wav"
+        assert whisperx_url == "http://whisperx"
+        return "hello prompt"
+
+    monkeypatch.setattr("server.core.media_processing._extract_full_audio_for_transcription", _fake_extract)
+    monkeypatch.setattr("server.core.media_processing.transcribe_audio_for_prompt", _fake_transcribe)
+
+    source = tmp_path / "prompt.m4a"
+    source.write_bytes(b"demo")
+
+    text = await transcribe_source_audio_for_prompt(source, whisperx_url="http://whisperx")
+
+    assert text == "hello prompt"
+    assert extracted == [(source, "prompt.wav")]
+    assert transcribed

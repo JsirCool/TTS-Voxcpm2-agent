@@ -32,6 +32,7 @@ from server.core.models import Base, Event
 from server.core.media_processing import (
     MediaProcessResult,
     MediaToolStatus,
+    MediaWaveformResult,
     SubtitleResolveResult,
     SubtitleCue,
     TrialSynthesisResult,
@@ -186,6 +187,35 @@ class TestAudioRoute:
         )
 
 
+    async def test_audio_route_falls_back_to_localfs_uri(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.main import app
+        from server.api.deps import get_storage
+        from server.core.storage import LocalFSStorage
+
+        storage = MagicMock()
+        storage.download_bytes = AsyncMock(side_effect=FileNotFoundError("missing from active backend"))
+        app.dependency_overrides[get_storage] = lambda: storage
+
+        root = tmp_path / "storage"
+        monkeypatch.setenv("HARNESS_LOCAL_STORAGE_DIR", str(root))
+        key = "episodes/ep/chunks/ep:shot01:1/takes/take-001.wav"
+        fallback_storage = LocalFSStorage(root, "tts-harness")
+        await fallback_storage.upload_bytes(key, b"RIFFfallbackWAVE")
+
+        audio_uri = f"localfs://tts-harness/{key}"
+        resp = await client.get(f"/audio/{quote(audio_uri, safe='')}")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        assert resp.content == b"RIFFfallbackWAVE"
+        storage.download_bytes.assert_awaited_once_with(key)
+
+
 class TestEpisodeCRUD:
     async def test_create_episode(self, client: AsyncClient):
         script = json.dumps({"title": "My Ep", "segments": []})
@@ -319,6 +349,102 @@ class TestChunkEdit:
         assert resp.json()["error"] == "invalid_input"
 
 
+class TestChunkGap:
+    async def test_update_and_reset_chunk_gap(self, seeded_client: AsyncClient):
+        resp = await seeded_client.patch(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/gap",
+            json={"nextGapMs": -250},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["nextGapMs"] == -250
+
+        detail = await seeded_client.get("/episodes/ep-test")
+        assert detail.status_code == 200
+        assert detail.json()["chunks"][0]["nextGapMs"] == -250
+
+        reset = await seeded_client.patch(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/gap",
+            json={"nextGapMs": None},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["nextGapMs"] is None
+
+    async def test_update_chunk_gap_rejects_range(self, seeded_client: AsyncClient):
+        resp = await seeded_client.patch(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/gap",
+            json={"nextGapMs": 2501},
+        )
+        assert resp.status_code == 422
+
+    async def test_update_chunk_gap_rejects_last_chunk_non_null(self, seeded_client: AsyncClient):
+        resp = await seeded_client.patch(
+            "/episodes/ep-test/chunks/ep-test:shot01:1/gap",
+            json={"nextGapMs": 100},
+        )
+        assert resp.status_code == 409
+
+    async def test_gap_preview_requires_selected_takes(self, seeded_client: AsyncClient):
+        resp = await seeded_client.post(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/gap-preview",
+            json={"gapMs": 100},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "invalid_state"
+
+    async def test_episode_gap_preview_requires_selected_takes(self, seeded_client: AsyncClient):
+        resp = await seeded_client.post("/episodes/ep-test/gap-preview")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "invalid_state"
+
+    async def test_episode_gap_preview_returns_wav(
+        self,
+        seeded_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import episodes as episode_routes
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_render_preview_audio(
+            *,
+            storage: Any,
+            chunk_take_pairs: list[tuple[Any, Any]],
+            gap_overrides_ms: dict[str, int | None] | None = None,
+        ) -> bytes:
+            captured["pair_count"] = len(chunk_take_pairs)
+            captured["has_storage"] = storage is not None
+            captured["gap_overrides_ms"] = gap_overrides_ms
+            return b"RIFFpreviewWAVE"
+
+        monkeypatch.setattr(episode_routes, "_render_preview_audio", _fake_render_preview_audio)
+
+        global _maker
+        async with _maker() as session:
+            take_repo = TakeRepo(session)
+            chunk_repo = ChunkRepo(session)
+            await take_repo.append(TakeAppend(
+                id="take-002",
+                chunk_id="ep-test:shot01:1",
+                audio_uri="s3://tts-harness/test-2.wav",
+                duration_s=1.2,
+                params={},
+            ))
+            await chunk_repo.set_selected_take("ep-test:shot01:0", "take-001")
+            await chunk_repo.set_selected_take("ep-test:shot01:1", "take-002")
+            await session.commit()
+
+        resp = await seeded_client.post("/episodes/ep-test/gap-preview")
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        assert resp.content == b"RIFFpreviewWAVE"
+        assert captured == {
+            "pair_count": 2,
+            "has_storage": True,
+            "gap_overrides_ms": None,
+        }
+
+
 class TestChunkRetry:
     async def test_retry_chunk(self, seeded_client: AsyncClient):
         resp = await seeded_client.post(
@@ -356,6 +482,7 @@ class TestMediaRoutes:
         assert data["bilibiliPublicOnly"] is True
         assert data["bilibiliLoginSupported"] is False
         assert data["demucsError"] == "missing demucs"
+        assert data["bilibiliImportDir"].endswith(r"voice_sourse\imported\bilibili")
 
     async def test_import_bilibili_media_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
         from server.api.routes import media as media_routes
@@ -384,6 +511,7 @@ class TestMediaRoutes:
         assert resp.status_code == 200
         assert resp.json() == {
             "sourceRelativePath": "imported/bilibili/BV1/video/p01.mp4",
+            "absolutePath": r"E:\VC\voice_sourse\imported\bilibili\BV1\video\p01.mp4",
             "previewUrl": "/media/source?path=imported%2Fbilibili%2FBV1%2Fvideo%2Fp01.mp4",
             "mediaType": "video",
             "title": "Demo title",
@@ -405,6 +533,291 @@ class TestMediaRoutes:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("audio/wav")
         assert resp.content == b"RIFFdemo"
+
+    async def test_open_voice_source_folder(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        from server.api.routes import media as media_routes
+
+        opened: list[Path] = []
+        voice_dir = tmp_path / "voice_sourse"
+
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: voice_dir)
+        monkeypatch.setattr(media_routes, "_open_directory", lambda path: opened.append(path))
+
+        resp = await client.post("/media/voice-source/open")
+
+        assert resp.status_code == 200
+        assert resp.json()["path"] == str(voice_dir)
+        assert voice_dir.exists()
+        assert opened == [voice_dir]
+
+    async def test_open_bilibili_import_folder(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        from server.api.routes import media as media_routes
+
+        opened: list[Path] = []
+        voice_dir = tmp_path / "voice_sourse"
+        bilibili_dir = voice_dir / "imported" / "bilibili"
+
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: voice_dir)
+        monkeypatch.setattr(media_routes, "_open_directory", lambda path: opened.append(path))
+
+        resp = await client.post("/media/imported-bilibili/open")
+
+        assert resp.status_code == 200
+        assert resp.json()["path"] == str(bilibili_dir)
+        assert bilibili_dir.exists()
+        assert opened == [bilibili_dir]
+
+    async def test_pick_local_media_source_defaults_to_bilibili_dir(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        voice_dir = tmp_path / "voice_sourse"
+        source = voice_dir / "imported" / "bilibili" / "BV1" / "video" / "p01.mp4"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"demo-video")
+
+        picked_dirs: list[Path] = []
+
+        def fake_picker(initial_dir: Path) -> Path:
+            picked_dirs.append(initial_dir)
+            return source
+
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: voice_dir)
+        monkeypatch.setattr(media_routes, "_pick_local_media_file_tk", fake_picker)
+
+        resp = await client.post("/media/local-file/pick")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "sourceRelativePath": "imported/bilibili/BV1/video/p01.mp4",
+            "absolutePath": str(source),
+            "previewUrl": "/media/source?path=imported%2Fbilibili%2FBV1%2Fvideo%2Fp01.mp4",
+            "mediaType": "video",
+            "filename": "p01.mp4",
+            "sizeBytes": 10,
+        }
+        assert picked_dirs == [voice_dir / "imported" / "bilibili"]
+
+    async def test_media_waveform_supports_server_side_source(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported", "assets"): imported_source,
+        )
+        monkeypatch.setattr(
+            media_routes,
+            "build_media_waveform",
+            lambda path, bins=320: MediaWaveformResult(duration_s=3.2, peaks=[0.1, 0.8, 0.25]),
+        )
+
+        resp = await client.post(
+            "/media/waveform",
+            data={
+                "source_relative_path": "imported/bilibili/BV1/audio/p01.wav",
+                "bins": "3",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "durationS": 3.2,
+            "bins": 3,
+            "peaks": [0.1, 0.8, 0.25],
+        }
+
+    async def test_media_waveform_supports_uploaded_media(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(
+            media_routes,
+            "build_media_waveform",
+            lambda path, bins=320: MediaWaveformResult(duration_s=5.0, peaks=[0.2, 0.6]),
+        )
+
+        resp = await client.post(
+            "/media/waveform",
+            data={"bins": "2"},
+            files={"media": ("demo.mp4", io.BytesIO(b"fake-media"), "video/mp4")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "durationS": 5.0,
+            "bins": 2,
+            "peaks": [0.2, 0.6],
+        }
+
+    async def test_media_selection_preview_supports_server_side_source(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import media as media_routes
+
+        imported_source = Path(r"E:\VC\voice_sourse\imported\bilibili\BV1\audio\p01.wav")
+        monkeypatch.setattr(
+            media_routes,
+            "resolve_voice_library_path",
+            lambda path, allowed_prefixes=("imported", "assets"): imported_source,
+        )
+        monkeypatch.setattr(
+            media_routes,
+            "build_selection_preview_audio",
+            lambda path, start_s, end_s: b"RIFFdemo",
+        )
+
+        resp = await client.post(
+            "/media/selection-preview",
+            data={
+                "source_relative_path": "imported/bilibili/BV1/audio/p01.wav",
+                "start_s": "0.5",
+                "end_s": "1.7",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("audio/wav")
+        assert resp.content == b"RIFFdemo"
+
+    async def test_voice_source_upload_saves_audio(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        voice_dir = tmp_path / "voice_sourse"
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: voice_dir)
+
+        resp = await client.post(
+            "/media/voice-source/upload",
+            files={"media": ("prompt.wav", io.BytesIO(b"RIFFdemoWAVE"), "audio/wav")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["relativeAudioPath"] == "prompt.wav"
+        assert resp.json()["filename"] == "prompt.wav"
+        assert (voice_dir / "prompt.wav").read_bytes() == b"RIFFdemoWAVE"
+
+    async def test_voice_source_upload_dedupes_existing_file(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        voice_dir = tmp_path / "voice_sourse"
+        voice_dir.mkdir()
+        (voice_dir / "prompt.wav").write_bytes(b"old")
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: voice_dir)
+
+        resp = await client.post(
+            "/media/voice-source/upload",
+            files={"media": ("prompt.wav", io.BytesIO(b"RIFFnewWAVE"), "audio/wav")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["relativeAudioPath"] == "prompt-1.wav"
+        assert (voice_dir / "prompt.wav").read_bytes() == b"old"
+        assert (voice_dir / "prompt-1.wav").read_bytes() == b"RIFFnewWAVE"
+
+    async def test_voice_source_upload_rejects_non_audio(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(media_routes, "voice_source_root", lambda: tmp_path / "voice_sourse")
+
+        resp = await client.post(
+            "/media/voice-source/upload",
+            files={"media": ("notes.txt", io.BytesIO(b"not audio"), "text/plain")},
+        )
+
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid_input"
+
+    async def test_prompt_audio_transcribe_success(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        source = tmp_path / "prompt.m4a"
+        source.write_bytes(b"fake audio")
+        transcribe_mock = AsyncMock(return_value="hello prompt")
+
+        monkeypatch.setattr(media_routes, "resolve_audio_path", lambda path: source)
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(media_routes, "transcribe_source_audio_for_prompt", transcribe_mock)
+
+        resp = await client.post(
+            "/media/prompt-audio/transcribe",
+            json={"promptAudioPath": "voices/prompt.m4a"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "promptText": "hello prompt",
+            "audioPath": str(source),
+        }
+        transcribe_mock.assert_awaited_once_with(source, whisperx_url=media_routes.DEFAULT_WHISPERX_URL)
+
+    async def test_prompt_audio_transcribe_rejects_missing_file(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        monkeypatch.setattr(media_routes, "resolve_audio_path", lambda path: tmp_path / "missing.wav")
+
+        resp = await client.post(
+            "/media/prompt-audio/transcribe",
+            json={"promptAudioPath": "missing.wav"},
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "not_found"
+
+    async def test_prompt_audio_transcribe_rejects_unavailable_whisperx(
+        self,
+        client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        from server.api.routes import media as media_routes
+
+        source = tmp_path / "prompt.wav"
+        source.write_bytes(b"RIFFdemo")
+        transcribe_mock = AsyncMock(return_value="should not run")
+
+        monkeypatch.setattr(media_routes, "resolve_audio_path", lambda path: source)
+        monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(False, "loading")))
+        monkeypatch.setattr(media_routes, "transcribe_source_audio_for_prompt", transcribe_mock)
+
+        resp = await client.post(
+            "/media/prompt-audio/transcribe",
+            json={"promptAudioPath": "prompt.wav"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "whisperx_unavailable"
+        transcribe_mock.assert_not_awaited()
 
     async def test_media_process_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
         from server.api.routes import media as media_routes
@@ -868,6 +1281,67 @@ class TestDuplicateEpisode:
         # Verify the new episode exists
         resp2 = await seeded_client.get("/episodes/ep-copy")
         assert resp2.status_code == 200
+
+    async def test_duplicate_reads_script_from_storage_mirror(self, seeded_client: AsyncClient, tmp_path: Path):
+        from server.api.main import app
+        from server.api.deps import get_storage
+
+        mirror_root = tmp_path / "mirror"
+        mirror_script = mirror_root / "tts-harness" / "episodes" / "ep-test" / "script.json"
+        mirror_script.parent.mkdir(parents=True)
+        script_content = json.dumps({"title": "Mirror", "segments": [{"id": 1, "text": "hello"}]}).encode()
+        mirror_script.write_bytes(script_content)
+
+        mock_storage = MagicMock()
+        mock_storage.bucket = "tts-harness"
+        mock_storage.download_bytes = AsyncMock(side_effect=FileNotFoundError("missing primary script"))
+        mock_storage.upload_bytes = AsyncMock(return_value="s3://tts-harness/episodes/ep-copy/script.json")
+        mock_storage.ensure_bucket = AsyncMock()
+        app.dependency_overrides[get_storage] = lambda: mock_storage
+
+        with patch.dict(os.environ, {"HARNESS_STORAGE_MIRROR_DIR": str(mirror_root), "MINIO_BUCKET": "tts-harness"}):
+            resp = await seeded_client.post(
+                "/episodes/ep-test/duplicate",
+                json={"new_id": "ep-copy"},
+            )
+
+        assert resp.status_code == 201
+        mock_storage.upload_bytes.assert_awaited_once_with(
+            "episodes/ep-copy/script.json",
+            script_content,
+            "application/json",
+        )
+
+    async def test_duplicate_mirrors_script_to_desktop_localfs(self, seeded_client: AsyncClient, tmp_path: Path):
+        from server.api.main import app
+        from server.api.deps import get_storage
+
+        script_content = json.dumps({"title": "Local", "segments": [{"id": 1, "text": "hello"}]}).encode()
+        local_root = tmp_path / "local-storage"
+
+        mock_storage = MagicMock()
+        mock_storage.bucket = "tts-harness"
+        mock_storage.download_bytes = AsyncMock(return_value=script_content)
+        mock_storage.upload_bytes = AsyncMock(return_value="s3://tts-harness/episodes/ep-copy/script.json")
+        mock_storage.ensure_bucket = AsyncMock()
+        app.dependency_overrides[get_storage] = lambda: mock_storage
+
+        with patch.dict(
+            os.environ,
+            {
+                "HARNESS_DESKTOP_MODE": "1",
+                "HARNESS_LOCAL_STORAGE_DIR": str(local_root),
+                "MINIO_BUCKET": "tts-harness",
+            },
+        ):
+            resp = await seeded_client.post(
+                "/episodes/ep-test/duplicate",
+                json={"new_id": "ep-copy"},
+            )
+
+        assert resp.status_code == 201
+        target = local_root / "tts-harness" / "episodes" / "ep-copy" / "script.json"
+        assert target.read_bytes() == script_content
 
     async def test_duplicate_not_found(self, client: AsyncClient):
         resp = await client.post(

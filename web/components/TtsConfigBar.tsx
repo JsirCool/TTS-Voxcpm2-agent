@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -16,6 +23,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getApiUrl } from "@/lib/api-client";
 import { MediaCloneDialog } from "./MediaCloneDialog";
 import { TtsPresetDialog } from "./TtsPresetDialog";
 
@@ -129,6 +137,87 @@ function formToConfig(form: FormState, mode: TtsMode): Record<string, unknown> {
     prompt_audio_path: form.prompt_audio_path || undefined,
     prompt_text: form.prompt_text || undefined,
     denoise: form.denoise,
+  };
+}
+
+const SUPPORTED_AUDIO_EXTENSIONS = new Set([
+  "aac",
+  "flac",
+  "m4a",
+  "mp3",
+  "ogg",
+  "opus",
+  "wav",
+  "webm",
+  "wma",
+]);
+
+function isSupportedAudioFile(file: File): boolean {
+  if (file.type.startsWith("audio/")) return true;
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return SUPPORTED_AUDIO_EXTENSIONS.has(extension);
+}
+
+async function uploadVoiceSourceFile(
+  file: File,
+): Promise<{ relativeAudioPath: string; absolutePath: string }> {
+  const body = new FormData();
+  body.append("media", file);
+  const response = await fetch(`${getApiUrl()}/media/voice-source/upload`, {
+    method: "POST",
+    credentials: "include",
+    headers: process.env.NEXT_PUBLIC_API_TOKEN
+      ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+      : undefined,
+    body,
+  });
+  let payload: {
+    detail?: string;
+    relativeAudioPath?: string;
+    absolutePath?: string;
+  } | null = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    throw new Error(payload?.detail || `请求失败 (${response.status})`);
+  }
+  const relativeAudioPath = String(payload?.relativeAudioPath ?? "").trim();
+  if (!relativeAudioPath) {
+    throw new Error("上传成功，但服务端没有返回音频路径");
+  }
+  return {
+    relativeAudioPath,
+    absolutePath: String(payload?.absolutePath ?? ""),
+  };
+}
+
+async function transcribePromptAudio(promptAudioPath: string): Promise<{ promptText: string; audioPath: string | null }> {
+  const response = await fetch(`${getApiUrl()}/media/prompt-audio/transcribe`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(process.env.NEXT_PUBLIC_API_TOKEN
+        ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+        : {}),
+    },
+    body: JSON.stringify({ promptAudioPath }),
+  });
+  let body: { detail?: string; promptText?: string; audioPath?: string } | null = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    throw new Error(body?.detail || `请求失败 (${response.status})`);
+  }
+  return {
+    promptText: String(body?.promptText ?? "").trim(),
+    audioPath: typeof body?.audioPath === "string" ? body.audioPath : null,
   };
 }
 
@@ -344,6 +433,10 @@ function ConfigForm({
   const [form, setForm] = useState<FormState>(configToForm(config));
   const [mode, setMode] = useState<TtsMode>(() => inferMode(config));
   const [saving, setSaving] = useState(false);
+  const [uploadingPromptAudio, setUploadingPromptAudio] = useState(false);
+  const [draggingPromptAudio, setDraggingPromptAudio] = useState(false);
+  const [transcribingPromptText, setTranscribingPromptText] = useState(false);
+  const promptAudioInputRef = useRef<HTMLInputElement | null>(null);
 
   const setField = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -359,6 +452,91 @@ function ConfigForm({
       setSaving(false);
     }
   }, [episodeId, form, mode, onSaved, onUpdateConfig]);
+
+  const importPromptAudioFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    if (!isSupportedAudioFile(file)) {
+      toast.error("请选择音频文件", {
+        description: "支持 wav、mp3、m4a、flac、ogg、opus、webm、wma。",
+      });
+      return;
+    }
+
+    setUploadingPromptAudio(true);
+    try {
+      const result = await uploadVoiceSourceFile(file);
+      setForm((prev) => ({
+        ...prev,
+        prompt_audio_path: result.relativeAudioPath,
+      }));
+      toast.success("Prompt Audio 已导入", {
+        description: result.relativeAudioPath,
+      });
+    } catch (e) {
+      toast.error("导入音频失败", { description: (e as Error).message });
+    } finally {
+      setUploadingPromptAudio(false);
+      if (promptAudioInputRef.current) {
+        promptAudioInputRef.current.value = "";
+      }
+    }
+  }, []);
+
+  const handleSelectPromptAudio = useCallback(() => {
+    promptAudioInputRef.current?.click();
+  }, []);
+
+  const handlePromptAudioFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      await importPromptAudioFile(event.target.files?.[0] ?? null);
+    },
+    [importPromptAudioFile],
+  );
+
+  const handlePromptAudioDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDraggingPromptAudio(true);
+  }, []);
+
+  const handlePromptAudioDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDraggingPromptAudio(false);
+  }, []);
+
+  const handlePromptAudioDrop = useCallback(
+    async (event: DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      setDraggingPromptAudio(false);
+      await importPromptAudioFile(event.dataTransfer.files?.[0] ?? null);
+    },
+    [importPromptAudioFile],
+  );
+
+  const handleTranscribePromptText = useCallback(async () => {
+    const promptAudioPath = form.prompt_audio_path.trim();
+    if (!promptAudioPath) {
+      toast.error("请先填写 Prompt Audio Path");
+      return;
+    }
+
+    setTranscribingPromptText(true);
+    try {
+      const result = await transcribePromptAudio(promptAudioPath);
+      if (!result.promptText) {
+        toast.error("没有识别到可用文本");
+        return;
+      }
+      setForm((prev) => ({ ...prev, prompt_text: result.promptText }));
+      toast.success("Prompt Text 已自动转写", {
+        description: result.audioPath ?? promptAudioPath,
+      });
+    } catch (e) {
+      toast.error("Prompt Text 转写失败", { description: (e as Error).message });
+    } finally {
+      setTranscribingPromptText(false);
+    }
+  }, [form.prompt_audio_path]);
 
   const inputClass =
     "w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100";
@@ -479,19 +657,51 @@ function ConfigForm({
         {showPromptAudio ? (
           <>
             <div>
-              <label className="mb-1 flex items-center gap-1 text-xs text-neutral-600">
-                Prompt Audio Path
-                <HelpTip>
-                  决定“从哪句继续说”。这里也填写相对于 <code>voice_sourse</code> 的路径。
-                </HelpTip>
-              </label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="flex items-center gap-1 text-xs text-neutral-600">
+                  Prompt Audio Path
+                  <HelpTip>
+                    决定“从哪句继续说”。这里也填写相对于 <code>voice_sourse</code> 的路径。
+                  </HelpTip>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleSelectPromptAudio}
+                  disabled={uploadingPromptAudio}
+                  className="ml-auto rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-neutral-50 disabled:cursor-wait disabled:opacity-60 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+                  title="选择音频文件并导入 voice_sourse"
+                >
+                  {uploadingPromptAudio ? "导入中..." : "选择文件"}
+                </button>
+              </div>
               <input
-                type="text"
-                value={form.prompt_audio_path}
-                onChange={(e) => setField("prompt_audio_path", e.target.value)}
-                className={inputClass}
-                placeholder="例如：111.m4a"
+                ref={promptAudioInputRef}
+                type="file"
+                accept="audio/*,.aac,.flac,.m4a,.mp3,.ogg,.opus,.wav,.webm,.wma"
+                className="hidden"
+                onChange={handlePromptAudioFileChange}
               />
+              <div
+                onDragOver={handlePromptAudioDragOver}
+                onDragLeave={handlePromptAudioDragLeave}
+                onDrop={handlePromptAudioDrop}
+                className={`rounded-md border border-dashed p-2 transition ${
+                  draggingPromptAudio
+                    ? "border-blue-400 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30"
+                    : "border-neutral-200 bg-neutral-50/70 dark:border-neutral-700 dark:bg-neutral-900/30"
+                }`}
+              >
+                <input
+                  type="text"
+                  value={form.prompt_audio_path}
+                  onChange={(e) => setField("prompt_audio_path", e.target.value)}
+                  className={inputClass}
+                  placeholder="例如：111.m4a"
+                />
+                <div className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  可把音频文件拖到这里，系统会复制到 voice_sourse 并自动填入路径。
+                </div>
+              </div>
             </div>
 
             <div>
@@ -501,6 +711,17 @@ function ConfigForm({
                   填写 Prompt Audio 里真实说出的文本。当前 harness 不会自动识别这段前文，最好手填。
                 </HelpTip>
               </label>
+              <div className="mb-1 flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleTranscribePromptText}
+                  disabled={transcribingPromptText || !form.prompt_audio_path.trim()}
+                  className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] text-neutral-600 hover:border-neutral-400 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-600 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:bg-neutral-800"
+                  title="使用 WhisperX 转写 Prompt Audio Path"
+                >
+                  {transcribingPromptText ? "转写中..." : "语音转写"}
+                </button>
+              </div>
               <textarea
                 value={form.prompt_text}
                 onChange={(e) => setField("prompt_text", e.target.value)}

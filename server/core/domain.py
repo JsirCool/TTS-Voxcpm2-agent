@@ -37,6 +37,7 @@ EventKind = Literal[
     "take_appended",
     "take_finalized",
     "chunk_edited",
+    "chunk_gap_updated",
     "episode_created",
     "episode_status_changed",
     "verify_started",
@@ -170,6 +171,7 @@ class ChunkView(_ORM):
     subtitle_text: str | None
     status: ChunkStatus
     selected_take_id: str | None
+    next_gap_ms: int | None = None
     boundary_hash: str | None
     char_count: int
     last_edited_at: datetime | None

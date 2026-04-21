@@ -11,14 +11,17 @@ import io
 import json
 import os
 import shutil
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 # In-flight run tasks — cancel support
 _running_tasks: dict[str, asyncio.Task] = {}  # episode_id → Task
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from minio.error import S3Error
 from pydantic import BaseModel
 from server.core.domain import _CamelBase
@@ -43,9 +46,13 @@ from server.core.repositories import (
     TakeRepo,
 )
 from server.core.models import Event
-from server.core.storage import StorageBackend, episode_script_key, storage_uri_to_key
+from server.core.runtime_mode import desktop_mode_enabled, repo_root
+from server.core.storage import LocalFSStorage, StorageBackend, episode_script_key, storage_uri_to_key
+from server.core.p6_logic import ChunkTiming, compute_timeline_layout, run_ffmpeg_timeline_mix
 from server.core.export_bundle import (
     DEFAULT_EXPORT_FPS,
+    PADDING_S,
+    SHOT_GAP_S,
     build_export_bundle,
     compute_export_cache_key,
     write_export_bundle_to_directory,
@@ -60,6 +67,276 @@ from server.core.tts_presets import (
 
 router = APIRouter(tags=["episodes"])
 CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
+CHUNK_GAP_MIN_MS = -1000
+CHUNK_GAP_MAX_MS = 2000
+
+
+def _storage_bucket(storage: StorageBackend) -> str:
+    bucket = getattr(storage, "bucket", None)
+    if isinstance(bucket, str) and bucket:
+        return bucket
+    return os.environ.get("MINIO_BUCKET", "tts-harness")
+
+
+def _script_candidate_keys(episode_id: str, script_uri: str | None) -> list[str]:
+    keys: list[str] = []
+    for key in (
+        storage_uri_to_key(script_uri or ""),
+        episode_script_key(episode_id),
+    ):
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _safe_storage_parts(key: str) -> list[str]:
+    return [
+        part
+        for part in (key or "").strip().strip("/").split("/")
+        if part and part not in (".", "..")
+    ]
+
+
+def _storage_mirror_roots() -> list[Path]:
+    roots: list[Path] = []
+    raw = os.environ.get("HARNESS_STORAGE_MIRROR_DIR")
+    if raw:
+        roots.append(Path(raw).expanduser())
+    roots.append(repo_root() / ".desktop-runtime" / "storage-mirror")
+    roots.append(repo_root() / "storage-mirror")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        resolved = root.resolve()
+        marker = str(resolved).lower()
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(resolved)
+    return unique
+
+
+def _storage_mirror_paths(bucket: str, key: str) -> list[Path]:
+    parts = _safe_storage_parts(key)
+    if not parts:
+        return []
+
+    # Older mirrors URL-encoded non-ASCII path parts without the newer localfs
+    # escape prefix, so try both the literal and legacy encoded layouts.
+    variants = [
+        parts,
+        [quote(part, safe="-_().%") for part in parts],
+    ]
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for root in _storage_mirror_roots():
+        bucket_root = (root / bucket).resolve()
+        for variant in variants:
+            path = bucket_root
+            for part in variant:
+                path = path / part
+            resolved = path.resolve()
+            marker = str(resolved).lower()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                resolved.relative_to(bucket_root)
+            except ValueError:
+                continue
+            candidates.append(resolved)
+    return candidates
+
+
+async def _read_script_from_mirror(bucket: str, key: str) -> bytes | None:
+    for path in _storage_mirror_paths(bucket, key):
+        if path.is_file():
+            return await asyncio.to_thread(path.read_bytes)
+    return None
+
+
+def _desktop_localfs_storage(bucket: str) -> LocalFSStorage | None:
+    if not desktop_mode_enabled() and not os.environ.get("HARNESS_LOCAL_STORAGE_DIR"):
+        return None
+    root = os.environ.get("HARNESS_LOCAL_STORAGE_DIR")
+    if not root:
+        root = str((repo_root() / ".desktop-runtime" / "data" / "storage").resolve())
+    return LocalFSStorage(root_dir=Path(root), bucket=bucket)
+
+
+def _fallback_localfs_storage(uri: str) -> LocalFSStorage | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "localfs":
+        return None
+    root = os.environ.get("HARNESS_LOCAL_STORAGE_DIR")
+    if not root:
+        root = str((repo_root() / ".desktop-runtime" / "data" / "storage").resolve())
+    return LocalFSStorage(
+        root_dir=Path(root),
+        bucket=parsed.netloc or os.environ.get("MINIO_BUCKET", "tts-harness"),
+    )
+
+
+async def _download_episode_script_bytes(
+    storage: StorageBackend,
+    *,
+    episode_id: str,
+    script_uri: str | None,
+) -> bytes:
+    bucket = _storage_bucket(storage)
+    localfs = _desktop_localfs_storage(bucket)
+
+    for key in _script_candidate_keys(episode_id, script_uri):
+        try:
+            return await storage.download_bytes(key)
+        except Exception:
+            pass
+
+        if localfs is not None and not isinstance(storage, LocalFSStorage):
+            try:
+                return await localfs.download_bytes(key)
+            except Exception:
+                pass
+
+        mirrored = await _read_script_from_mirror(bucket, key)
+        if mirrored is not None:
+            return mirrored
+
+    raise DomainError("not_found", f"script for episode '{episode_id}' not found in storage")
+
+
+def _storage_bucket_from_uri(uri: str, storage: StorageBackend) -> str:
+    raw = (uri or "").strip()
+    if "://" in raw:
+        rest = raw.split("://", 1)[1].split("?", 1)[0].strip("/")
+        bucket = rest.split("/", 1)[0]
+        if bucket:
+            return bucket
+    return _storage_bucket(storage)
+
+
+async def _download_audio_uri_bytes(storage: StorageBackend, audio_uri: str) -> bytes:
+    key = storage_uri_to_key(audio_uri)
+    try:
+        return await storage.download_bytes(key)
+    except Exception as primary_exc:
+        fallback_localfs = _fallback_localfs_storage(audio_uri)
+        if fallback_localfs is not None:
+            try:
+                return await fallback_localfs.download_bytes(key)
+            except Exception:
+                pass
+
+        localfs = _desktop_localfs_storage(_storage_bucket_from_uri(audio_uri, storage))
+        if localfs is not None and not isinstance(storage, LocalFSStorage):
+            try:
+                return await localfs.download_bytes(key)
+            except Exception:
+                pass
+
+        for path in _storage_mirror_paths(_storage_bucket_from_uri(audio_uri, storage), key):
+            if path.is_file():
+                return await asyncio.to_thread(path.read_bytes)
+
+        raise DomainError("not_found", f"audio not found: {audio_uri}") from primary_exc
+
+
+def _validate_chunk_gap_ms(value: int | None) -> None:
+    if value is None:
+        return
+    if value < CHUNK_GAP_MIN_MS or value > CHUNK_GAP_MAX_MS:
+        raise DomainError(
+            "invalid_input",
+            f"nextGapMs must be between {CHUNK_GAP_MIN_MS} and {CHUNK_GAP_MAX_MS}",
+        )
+
+
+def _chunk_and_next(chunks: list[Any], chunk_id: str) -> tuple[Any, Any | None]:
+    for index, chunk in enumerate(chunks):
+        if chunk.id == chunk_id:
+            return chunk, chunks[index + 1] if index + 1 < len(chunks) else None
+    raise DomainError("not_found", f"chunk '{chunk_id}' not found")
+
+
+def _ordered_chunk_take_pairs(chunk_take_pairs: list[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
+    return sorted(
+        chunk_take_pairs,
+        key=lambda item: (str(item[0].shot_id), int(item[0].idx), str(item[0].id)),
+    )
+
+
+async def _render_preview_audio(
+    *,
+    storage: StorageBackend,
+    chunk_take_pairs: list[tuple[Any, Any]],
+    gap_overrides_ms: dict[str, int | None] | None = None,
+) -> bytes:
+    ordered_pairs = _ordered_chunk_take_pairs(chunk_take_pairs)
+    if not ordered_pairs:
+        raise DomainError("invalid_state", "episode has no previewable chunks")
+
+    with tempfile.TemporaryDirectory(prefix="gap-preview-") as tmp:
+        tmp_path = Path(tmp)
+        audio_paths: list[Path] = []
+        timings: list[ChunkTiming] = []
+
+        for index, (chunk, take) in enumerate(ordered_pairs):
+            duration_s = float(take.duration_s or 0.0)
+            if duration_s <= 0:
+                continue
+
+            audio_path = tmp_path / f"chunk_{index:03d}.wav"
+            audio_path.write_bytes(await _download_audio_uri_bytes(storage, take.audio_uri))
+            audio_paths.append(audio_path)
+            timings.append(
+                ChunkTiming(
+                    chunk_id=chunk.id,
+                    shot_id=chunk.shot_id,
+                    idx=chunk.idx,
+                    duration_s=duration_s,
+                    next_gap_ms=(
+                        gap_overrides_ms.get(chunk.id)
+                        if gap_overrides_ms is not None and chunk.id in gap_overrides_ms
+                        else getattr(chunk, "next_gap_ms", None)
+                    ),
+                )
+            )
+
+        if not timings:
+            raise DomainError("invalid_state", "episode has no previewable chunks")
+
+        layout = compute_timeline_layout(timings, PADDING_S, SHOT_GAP_S)
+        output_path = tmp_path / "preview.wav"
+        await run_ffmpeg_timeline_mix(audio_paths, layout.offsets, output_path)
+        return output_path.read_bytes()
+
+
+def _preview_audio_response(data: bytes) -> StreamingResponse:
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Length": str(len(data)),
+        },
+    )
+
+
+async def _mirror_script_to_desktop_localfs(
+    storage: StorageBackend,
+    key: str,
+    data: bytes,
+) -> None:
+    if isinstance(storage, LocalFSStorage):
+        return
+    localfs = _desktop_localfs_storage(_storage_bucket(storage))
+    if localfs is None:
+        return
+    try:
+        await localfs.upload_bytes(key, data, "application/json")
+    except Exception as exc:
+        raise DomainError("storage_error", f"failed to mirror script for local worker: {key}") from exc
 
 
 def _take_to_view(take: Any) -> TakeView:
@@ -107,6 +384,14 @@ class FinalizeResponse(_CamelBase):
 
 class EditResponse(_CamelBase):
     updated: int
+
+
+class ChunkGapRequest(_CamelBase):
+    next_gap_ms: int | None = None
+
+
+class ChunkGapPreviewRequest(_CamelBase):
+    gap_ms: int
 
 
 class ReviewConfirmResponse(_CamelBase):
@@ -342,6 +627,7 @@ async def get_episode(
             "subtitle_text": c.subtitle_text,
             "status": chunk_status,
             "selected_take_id": c.selected_take_id,
+            "next_gap_ms": getattr(c, "next_gap_ms", None),
             "boundary_hash": c.boundary_hash,
             "char_count": c.char_count,
             "last_edited_at": c.last_edited_at,
@@ -831,7 +1117,7 @@ async def run_episode(
         **(ep.extra_metadata or {}),
         "lastRunId": flow_run_id,
         "lastRunMode": mode,
-        "lastRunStartedAt": datetime.utcnow().isoformat(),
+        "lastRunStartedAt": datetime.now(timezone.utc).isoformat(),
         "selectedChunkCount": len(chunk_ids or []),
     }
     await repo.set_status(episode_id, "running")
@@ -922,6 +1208,130 @@ async def edit_chunk(
     await session.commit()
 
     return EditResponse(updated=updated)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /episodes/{id}/chunks/{cid}/gap
+# POST /episodes/{id}/chunks/{cid}/gap-preview
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/episodes/{episode_id}/chunks/{chunk_id}/gap",
+    response_model=ChunkView,
+)
+async def update_chunk_gap(
+    episode_id: str,
+    chunk_id: str,
+    body: ChunkGapRequest,
+    session: AsyncSession = Depends(get_session),
+) -> ChunkView:
+    _validate_chunk_gap_ms(body.next_gap_ms)
+
+    ep_repo = EpisodeRepo(session)
+    ep = await ep_repo.get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+    if ep.locked:
+        raise DomainError("invalid_state", f"episode '{episode_id}' is locked")
+
+    chunk_repo = ChunkRepo(session)
+    chunks = list(await chunk_repo.list_by_episode(episode_id))
+    chunk, next_chunk = _chunk_and_next(chunks, chunk_id)
+    if next_chunk is None and body.next_gap_ms is not None:
+        raise DomainError("invalid_state", "last chunk cannot have a non-null nextGapMs")
+
+    updated = await chunk_repo.set_next_gap_ms(chunk_id, body.next_gap_ms)
+    if not updated:
+        raise DomainError("not_found", f"chunk '{chunk_id}' not found in episode '{episode_id}'")
+
+    if ep.status == "done":
+        await ep_repo.set_status(episode_id, "ready")
+
+    event_repo = EventRepo(session)
+    await event_repo.write(
+        episode_id=episode_id,
+        chunk_id=chunk_id,
+        kind="chunk_gap_updated",
+        payload={
+            "next_gap_ms": body.next_gap_ms,
+            "next_chunk_id": next_chunk.id if next_chunk is not None else None,
+        },
+    )
+    await session.flush()
+    await session.refresh(chunk)
+    await session.commit()
+    return ChunkView.model_validate(chunk)
+
+
+@router.post("/episodes/{episode_id}/chunks/{chunk_id}/gap-preview")
+async def preview_chunk_gap(
+    episode_id: str,
+    chunk_id: str,
+    body: ChunkGapPreviewRequest,
+    session: AsyncSession = Depends(get_session),
+    storage: StorageBackend = Depends(get_storage),
+) -> StreamingResponse:
+    _validate_chunk_gap_ms(body.gap_ms)
+
+    ep = await EpisodeRepo(session).get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+
+    chunk_repo = ChunkRepo(session)
+    chunks = list(await chunk_repo.list_by_episode(episode_id))
+    chunk, next_chunk = _chunk_and_next(chunks, chunk_id)
+    if next_chunk is None:
+        raise DomainError("invalid_state", "last chunk has no next chunk to preview")
+    if not chunk.selected_take_id or not next_chunk.selected_take_id:
+        raise DomainError("invalid_state", "both chunks must have selected takes before preview")
+
+    take_repo = TakeRepo(session)
+    take = await take_repo.select(chunk.selected_take_id)
+    next_take = await take_repo.select(next_chunk.selected_take_id)
+    if take is None or next_take is None:
+        raise DomainError("not_found", "selected take not found")
+
+    data = await _render_preview_audio(
+        storage=storage,
+        chunk_take_pairs=[(chunk, take), (next_chunk, next_take)],
+        gap_overrides_ms={chunk.id: body.gap_ms},
+    )
+    return _preview_audio_response(data)
+
+
+@router.post("/episodes/{episode_id}/gap-preview")
+async def preview_episode_gap(
+    episode_id: str,
+    session: AsyncSession = Depends(get_session),
+    storage: StorageBackend = Depends(get_storage),
+) -> StreamingResponse:
+    ep = await EpisodeRepo(session).get(episode_id)
+    if ep is None:
+        raise DomainError("not_found", f"episode '{episode_id}' not found")
+
+    chunk_repo = ChunkRepo(session)
+    chunks = list(await chunk_repo.list_by_episode(episode_id))
+    if not chunks:
+        raise DomainError("invalid_state", "episode has no chunks to preview")
+
+    missing_selected_take = [chunk.id for chunk in chunks if not chunk.selected_take_id]
+    if missing_selected_take:
+        raise DomainError("invalid_state", "all chunks must have selected takes before preview")
+
+    take_repo = TakeRepo(session)
+    chunk_take_pairs: list[tuple[Any, Any]] = []
+    for chunk in chunks:
+        take = await take_repo.select(chunk.selected_take_id)
+        if take is None:
+            raise DomainError("not_found", f"selected take not found for chunk '{chunk.id}'")
+        chunk_take_pairs.append((chunk, take))
+
+    data = await _render_preview_audio(
+        storage=storage,
+        chunk_take_pairs=chunk_take_pairs,
+    )
+    return _preview_audio_response(data)
 
 
 # ---------------------------------------------------------------------------
@@ -1225,16 +1635,16 @@ async def duplicate_episode(
     if existing is not None:
         raise DomainError("invalid_input", f"episode '{body.new_id}' already exists")
 
-    # Read original script from MinIO
-    script_key = episode_script_key(episode_id)
-    try:
-        script_bytes = await storage.download_bytes(script_key)
-    except Exception:
-        raise DomainError("not_found", f"script for episode '{episode_id}' not found in storage")
+    script_bytes = await _download_episode_script_bytes(
+        storage,
+        episode_id=episode_id,
+        script_uri=original.script_uri,
+    )
 
     # Upload script under new id
     new_key = episode_script_key(body.new_id)
     script_uri = await storage.upload_bytes(new_key, script_bytes, "application/json")
+    await _mirror_script_to_desktop_localfs(storage, new_key, script_bytes)
 
     payload = EpisodeCreate(
         id=body.new_id,

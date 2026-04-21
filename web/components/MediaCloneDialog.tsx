@@ -15,22 +15,29 @@ import {
   buildMediaPreviewUrl,
   buildNeutralTrialConfig,
   fetchMediaCapabilities,
+  fetchMediaWaveform,
   getDefaultMediaApplyMode,
   importBilibiliMedia,
+  openBilibiliImportFolder,
+  pickLocalMediaSource,
   processCloneMedia,
+  requestSelectionPreview,
   requestTrialSynthesis,
   resolveMediaSubtitles,
   type BilibiliDownloadTarget,
   type BilibiliImportResult,
+  type LocalMediaPickResult,
   type MediaApplyMode,
   type MediaCapabilities,
   type MediaCleanupMode,
   type MediaProcessResult,
+  type MediaWaveformResult,
   type MediaSourceMode,
   type SubtitleCue,
   type SubtitleResolveResult,
   type TrialSynthesisResult,
 } from "@/lib/media-clone";
+import { MediaWaveformEditor } from "@/components/MediaWaveformEditor";
 
 interface Props {
   open: boolean;
@@ -39,6 +46,15 @@ interface Props {
   onApplyConfig: (config: Record<string, unknown>) => Promise<void>;
   onApplied?: () => void;
 }
+
+interface SelectionPreviewState {
+  startS: number;
+  endS: number;
+  selectedText: string;
+  cueCount: number;
+}
+
+type WaveformCutTarget = "start" | "end";
 
 const ULTIMATE_CLONING_RECOMMENDED_MAX_SECONDS = 15;
 const ULTIMATE_CLONING_HARD_MAX_SECONDS = 40;
@@ -162,8 +178,12 @@ export function MediaCloneDialog({
   onApplied,
 }: Props) {
   const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const selectionPreviewRef = useRef<HTMLMediaElement | null>(null);
+  const localFileInputRef = useRef<HTMLInputElement | null>(null);
   const cueRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const autoDowngradedSubtitleSourceRef = useRef<string | null>(null);
+  const waveformRequestIdRef = useRef(0);
+  const subtitleRequestIdRef = useRef(0);
 
   const [sourceMode, setSourceMode] = useState<MediaSourceMode>("local_file");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -171,6 +191,7 @@ export function MediaCloneDialog({
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewKind, setPreviewKind] = useState<"video" | "audio" | null>(null);
   const [importedMeta, setImportedMeta] = useState<BilibiliImportResult | null>(null);
+  const [pickedLocalSource, setPickedLocalSource] = useState<LocalMediaPickResult | null>(null);
 
   const [currentTime, setCurrentTime] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
@@ -186,8 +207,14 @@ export function MediaCloneDialog({
   const [subtitleNeedsWhisperx, setSubtitleNeedsWhisperx] = useState(false);
   const [subtitlePromptMessage, setSubtitlePromptMessage] = useState("");
   const [subtitleResult, setSubtitleResult] = useState<SubtitleResolveResult | null>(null);
+  const [waveformResult, setWaveformResult] = useState<MediaWaveformResult | null>(null);
+  const [loadingWaveform, setLoadingWaveform] = useState(false);
+  const [nextWaveformCutTarget, setNextWaveformCutTarget] = useState<WaveformCutTarget>("start");
   const [selectionStart, setSelectionStart] = useState<number | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<number | null>(null);
+  const [selectionPreview, setSelectionPreview] = useState<SelectionPreviewState | null>(null);
+  const [selectionPreviewUrl, setSelectionPreviewUrl] = useState<string | null>(null);
+  const [generatingSelectionPreview, setGeneratingSelectionPreview] = useState(false);
 
   const [processing, setProcessing] = useState(false);
   const [processResult, setProcessResult] = useState<MediaProcessResult | null>(null);
@@ -196,6 +223,8 @@ export function MediaCloneDialog({
   const [trialing, setTrialing] = useState(false);
 
   const [importing, setImporting] = useState(false);
+  const [pickingLocalFile, setPickingLocalFile] = useState(false);
+  const [openingBilibiliFolder, setOpeningBilibiliFolder] = useState(false);
   const [bilibiliUrl, setBilibiliUrl] = useState("");
   const [downloadTarget, setDownloadTarget] = useState<BilibiliDownloadTarget>("video");
 
@@ -238,8 +267,21 @@ export function MediaCloneDialog({
     && Boolean(capabilities?.ffmpeg)
     && Boolean(capabilities?.ffprobe)
     && (cleanupMode !== "vocal_isolate" || Boolean(capabilities?.demucs));
+  const canConfirmSelection = hasSource
+    && Boolean(previewUrl)
+    && Number.isFinite(parsedStartS)
+    && Number.isFinite(parsedEndS)
+    && parsedEndS > parsedStartS;
   const canApply = Boolean(processResult)
     && (applyMode !== "ultimate_cloning" || Boolean(promptText.trim()));
+  const selectionPreviewStale = useMemo(() => {
+    if (!selectionPreview) return false;
+    return (
+      Math.abs(selectionPreview.startS - parsedStartS) > 0.0005
+      || Math.abs(selectionPreview.endS - parsedEndS) > 0.0005
+      || selectionPreview.selectedText !== selectedText
+    );
+  }, [parsedEndS, parsedStartS, selectedText, selectionPreview]);
 
   const resetWorkingSource = useCallback(() => {
     setSelectedFile(null);
@@ -247,18 +289,28 @@ export function MediaCloneDialog({
     setPreviewUrl("");
     setPreviewKind(null);
     setImportedMeta(null);
+    setPickedLocalSource(null);
     setCurrentTime(0);
     setMediaDuration(0);
     setStartS("0");
     setEndS("");
+    setResolvingSubtitles(false);
     setSubtitleResult(null);
+    setLoadingWaveform(false);
+    setWaveformResult(null);
+    setNextWaveformCutTarget("start");
     setSubtitleNeedsWhisperx(false);
     setSubtitlePromptMessage("");
     setSelectionStart(null);
     setSelectionEnd(null);
+    setSelectionPreview(null);
+    setSelectionPreviewUrl(null);
+    setGeneratingSelectionPreview(false);
     setProcessResult(null);
     setPromptText("");
     setTrialResult(null);
+    waveformRequestIdRef.current += 1;
+    subtitleRequestIdRef.current += 1;
     cueRefs.current = {};
   }, []);
 
@@ -275,9 +327,11 @@ export function MediaCloneDialog({
   useEffect(() => {
     if (!open) return;
     resetDialogState();
+    let cancelled = false;
     setLoadingCapabilities(true);
     void fetchMediaCapabilities()
       .then((data) => {
+        if (cancelled) return;
         setCapabilities(data);
         if (!data.demucs) {
           setCleanupMode("light");
@@ -287,12 +341,20 @@ export function MediaCloneDialog({
         }
       })
       .catch((error) => {
+        if (cancelled) return;
         setCapabilities(null);
         toast.error("加载素材处理能力失败", {
           description: (error as Error).message,
         });
       })
-      .finally(() => setLoadingCapabilities(false));
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingCapabilities(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [defaultApplyMode, open, resetDialogState]);
 
   useEffect(() => {
@@ -305,14 +367,71 @@ export function MediaCloneDialog({
     return () => URL.revokeObjectURL(nextUrl);
   }, [selectedFile, sourceMode]);
 
+  useEffect(() => {
+    if (!hasSource) {
+      waveformRequestIdRef.current += 1;
+      setWaveformResult(null);
+      setLoadingWaveform(false);
+      return;
+    }
+
+    const requestId = waveformRequestIdRef.current + 1;
+    waveformRequestIdRef.current = requestId;
+    setLoadingWaveform(true);
+    void fetchMediaWaveform({
+      file: selectedFile,
+      sourceRelativePath,
+      bins: 2400,
+    })
+      .then((result) => {
+        if (waveformRequestIdRef.current !== requestId) return;
+        setWaveformResult(result);
+        setEndS((current) => (
+          !current || Number(current) <= 0
+            ? (result.durationS > 0 ? result.durationS.toFixed(3) : "")
+            : current
+        ));
+      })
+      .catch((error) => {
+        if (waveformRequestIdRef.current !== requestId) return;
+        setWaveformResult(null);
+        toast.error("加载波形失败", {
+          description: (error as Error).message,
+        });
+      })
+      .finally(() => {
+        if (waveformRequestIdRef.current === requestId) {
+          setLoadingWaveform(false);
+        }
+      });
+
+    return () => {
+      if (waveformRequestIdRef.current === requestId) {
+        waveformRequestIdRef.current += 1;
+      }
+    };
+  }, [hasSource, selectedFile, sourceRelativePath]);
+
+  useEffect(() => {
+    return () => {
+      if (selectionPreviewUrl) {
+        URL.revokeObjectURL(selectionPreviewUrl);
+      }
+    };
+  }, [selectionPreviewUrl]);
+
   const loadSubtitles = useCallback(async (allowWhisperx: boolean) => {
     if (!hasSource) return;
+    const requestId = subtitleRequestIdRef.current + 1;
+    subtitleRequestIdRef.current = requestId;
     setResolvingSubtitles(true);
     setSubtitleResult(null);
     setSubtitleNeedsWhisperx(false);
     setSubtitlePromptMessage("");
     setSelectionStart(null);
     setSelectionEnd(null);
+    setSelectionPreview(null);
+    setSelectionPreviewUrl(null);
     setProcessResult(null);
     setPromptText("");
     setTrialResult(null);
@@ -329,8 +448,10 @@ export function MediaCloneDialog({
         sourceRelativePath,
         allowWhisperx,
       });
+      if (subtitleRequestIdRef.current !== requestId) return;
       setSubtitleResult(result);
     } catch (error) {
+      if (subtitleRequestIdRef.current !== requestId) return;
       const apiError = error as ApiError;
       if (apiError.code === "subtitle_requires_whisperx") {
         setSubtitleNeedsWhisperx(true);
@@ -342,7 +463,9 @@ export function MediaCloneDialog({
         });
       }
     } finally {
-      setResolvingSubtitles(false);
+      if (subtitleRequestIdRef.current === requestId) {
+        setResolvingSubtitles(false);
+      }
     }
   }, [hasSource, selectedFile, sourceRelativePath]);
 
@@ -392,6 +515,10 @@ export function MediaCloneDialog({
     mediaRef.current = node;
   }, []);
 
+  const handleSelectionPreviewRef = useCallback((node: HTMLMediaElement | null) => {
+    selectionPreviewRef.current = node;
+  }, []);
+
   const handleSourceModeChange = (nextMode: MediaSourceMode) => {
     setSourceMode(nextMode);
     resetWorkingSource();
@@ -405,6 +532,48 @@ export function MediaCloneDialog({
     setAssetName(file ? sanitizeAssetName(getNameFromFilename(file.name)) : "");
   };
 
+  const handlePickLocalFile = async () => {
+    setPickingLocalFile(true);
+    try {
+      const picked = await pickLocalMediaSource();
+      resetWorkingSource();
+      setPickedLocalSource(picked);
+      setSourceRelativePath(picked.sourceRelativePath);
+      setPreviewUrl(buildMediaPreviewUrl(picked.previewUrl));
+      setPreviewKind(picked.mediaType);
+      setAssetName(sanitizeAssetName(getNameFromFilename(picked.filename)));
+      toast.success("已选择本机文件", {
+        description: picked.absolutePath,
+      });
+    } catch (error) {
+      const apiError = error as ApiError;
+      if (apiError.code === "cancelled") {
+        return;
+      }
+      toast.error("选择本机文件失败", {
+        description: apiError.message,
+      });
+    } finally {
+      setPickingLocalFile(false);
+    }
+  };
+
+  const handleOpenBilibiliFolder = async () => {
+    setOpeningBilibiliFolder(true);
+    try {
+      const openedPath = await openBilibiliImportFolder();
+      toast.success("已打开 B 站下载目录", {
+        description: openedPath,
+      });
+    } catch (error) {
+      toast.error("打开 B 站下载目录失败", {
+        description: (error as Error).message,
+      });
+    } finally {
+      setOpeningBilibiliFolder(false);
+    }
+  };
+
   const handleLoadedMetadata = () => {
     const media = mediaRef.current;
     if (!media) return;
@@ -416,7 +585,44 @@ export function MediaCloneDialog({
     }
   };
 
+  const seekMediaTo = useCallback((timeS: number) => {
+    const media = mediaRef.current;
+    if (!media) return;
+    try {
+      media.currentTime = Math.max(0, timeS);
+    } catch {
+      // ignore seek errors while media metadata is warming up
+    }
+    setCurrentTime(Math.max(0, timeS));
+  }, []);
+
+  const applyWaveformCut = useCallback((rawTimeS: number) => {
+    const clamped = Math.max(0, Math.min(rawTimeS, mediaDuration || rawTimeS));
+    seekMediaTo(clamped);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+
+    if (nextWaveformCutTarget === "start") {
+      setStartS(clamped.toFixed(3));
+      setEndS(clamped.toFixed(3));
+      setNextWaveformCutTarget("end");
+      return;
+    }
+
+    const currentStart = Number.isFinite(parsedStartS) ? parsedStartS : clamped;
+    const start = Math.min(currentStart, clamped);
+    const end = Math.max(currentStart, clamped);
+    setStartS(start.toFixed(3));
+    setEndS(end.toFixed(3));
+    setNextWaveformCutTarget("start");
+  }, [mediaDuration, nextWaveformCutTarget, parsedStartS, seekMediaTo]);
+
+  const handleWaveformCutAtPlayhead = useCallback(() => {
+    applyWaveformCut(currentTime);
+  }, [applyWaveformCut, currentTime]);
+
   const handleCueClick = (index: number) => {
+    setNextWaveformCutTarget("start");
     if (selectionStart === null || (selectionStart !== null && selectionEnd !== null && selectionStart !== selectionEnd)) {
       setSelectionStart(index);
       setSelectionEnd(index);
@@ -424,6 +630,98 @@ export function MediaCloneDialog({
     }
     setSelectionEnd(index);
   };
+
+  const resetSelectionPreviewPlayback = useCallback(() => {
+    const media = selectionPreviewRef.current;
+    if (!media) return;
+    media.pause();
+    try {
+      media.currentTime = 0;
+    } catch {
+      // ignore seek errors while metadata is not ready
+    }
+  }, []);
+
+  const handleConfirmSelection = useCallback(async () => {
+    if (!canConfirmSelection) return;
+    setGeneratingSelectionPreview(true);
+    const nextPreview: SelectionPreviewState = {
+      startS: parsedStartS,
+      endS: parsedEndS,
+      selectedText,
+      cueCount: selectedCues.length,
+    };
+    try {
+      const audioBlob = await requestSelectionPreview({
+        file: selectedFile,
+        sourceRelativePath,
+        startS: parsedStartS,
+        endS: parsedEndS,
+      });
+      const nextUrl = URL.createObjectURL(audioBlob);
+      setSelectionPreview(nextPreview);
+      setSelectionPreviewUrl((current) => {
+        if (current) {
+          URL.revokeObjectURL(current);
+        }
+        return nextUrl;
+      });
+      toast.success("已生成选段预览", {
+        description: `${formatTime(parsedStartS)} - ${formatTime(parsedEndS)}`,
+      });
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(() => {
+          const media = selectionPreviewRef.current;
+          if (!media) return;
+          try {
+            media.currentTime = 0;
+            void media.play().catch(() => {
+              // ignore autoplay-blocked errors; controls remain available
+            });
+          } catch {
+            // ignore media warmup errors
+          }
+        });
+      }
+    } catch (error) {
+      toast.error("生成选段预览失败", {
+        description: (error as Error).message,
+      });
+    } finally {
+      setGeneratingSelectionPreview(false);
+    }
+  }, [
+    canConfirmSelection,
+    parsedEndS,
+    parsedStartS,
+    selectedCues.length,
+    selectedFile,
+    selectedText,
+    sourceRelativePath,
+  ]);
+
+  const handleSelectionPreviewLoadedMetadata = useCallback(() => {
+    const media = selectionPreviewRef.current;
+    if (!media) return;
+    try {
+      media.currentTime = 0;
+    } catch {
+      // ignore seek errors while the media element is still warming up
+    }
+  }, []);
+
+  const playSelectionPreview = useCallback(async () => {
+    const media = selectionPreviewRef.current;
+    if (!media) return;
+    if (Number.isFinite(media.duration) && media.currentTime >= Math.max(0, media.duration - 0.02)) {
+      media.currentTime = 0;
+    }
+    try {
+      await media.play();
+    } catch {
+      // ignore autoplay-blocked errors; the user can still press play in controls
+    }
+  }, []);
 
   const handleImportBilibili = async () => {
     if (!bilibiliUrl.trim()) {
@@ -596,8 +894,13 @@ export function MediaCloneDialog({
                   <CapabilityPill label="官方字幕" ok={capabilities.officialSubtitles} />
                   <CapabilityPill label="试配音" ok={capabilities.trialSynthesis} />
                 </div>
-                <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  素材目录：<code>{capabilities.voiceSourceDir}</code>
+                <div className="space-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <div>
+                    素材目录：<code>{capabilities.voiceSourceDir}</code>
+                  </div>
+                  <div>
+                    B 站下载目录：<code>{capabilities.bilibiliImportDir}</code>
+                  </div>
                 </div>
               </>
             ) : null}
@@ -623,17 +926,66 @@ export function MediaCloneDialog({
             </div>
 
             {sourceMode === "local_file" ? (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">
                   选择本地文件
                 </label>
                 <input
+                  ref={localFileInputRef}
                   type="file"
                   accept={ACCEPTED_MEDIA_TYPES}
-                  onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-                  className="block w-full text-sm text-neutral-700 file:mr-3 file:rounded file:border-0 file:bg-neutral-900 file:px-3 file:py-2 file:text-white hover:file:bg-neutral-800 dark:text-neutral-200 dark:file:bg-neutral-100 dark:file:text-neutral-900 dark:hover:file:bg-neutral-200"
+                  onChange={(event) => {
+                    handleFileChange(event.target.files?.[0] ?? null);
+                    event.currentTarget.value = "";
+                  }}
+                  className="hidden"
                 />
-                {selectedFile ? (
+                <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                  <div className="leading-relaxed">
+                    默认会从 B 站下载资源目录打开本机文件选择器，方便直接复用刚下载的素材。
+                  </div>
+                  {capabilities ? (
+                    <div className="mt-2 break-all">
+                      当前默认目录：<code>{capabilities.bilibiliImportDir}</code>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handlePickLocalFile()}
+                      disabled={pickingLocalFile}
+                      className="rounded bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-800 disabled:bg-neutral-300 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500"
+                    >
+                      {pickingLocalFile ? "等待系统选文件框..." : "选择文件"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenBilibiliFolder()}
+                      disabled={openingBilibiliFolder}
+                      className="rounded border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-neutral-100 disabled:text-neutral-400 dark:border-neutral-600 dark:text-neutral-200 dark:hover:bg-neutral-900 dark:disabled:text-neutral-500"
+                    >
+                      {openingBilibiliFolder ? "打开中..." : "打开 B 站下载目录"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => localFileInputRef.current?.click()}
+                      className="rounded border border-dashed border-neutral-300 px-4 py-2 text-sm text-neutral-600 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                    >
+                      浏览器选择
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                    如果 1-2 秒内没有看到系统选文件框，通常是被主窗口挡住了；也可以直接用右侧“浏览器选择”先继续。
+                  </div>
+                </div>
+                {pickedLocalSource ? (
+                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                    <div>当前素材：{pickedLocalSource.filename} · 本机选择</div>
+                    <div className="mt-1 break-all">
+                      文件路径：<code>{pickedLocalSource.absolutePath}</code>
+                    </div>
+                  </div>
+                ) : selectedFile ? (
                   <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
                     当前素材：{selectedFile.name} · {sourceModeLabel(sourceMode)}
                   </div>
@@ -684,13 +1036,16 @@ export function MediaCloneDialog({
                     <div>作者：{importedMeta.owner || "未知"}</div>
                     <div>时长：{formatDurationLabel(importedMeta.durationS)}</div>
                     <div>导入方式：{downloadTargetLabel(importedMeta.downloadTarget)}</div>
+                    <div className="break-all">
+                      保存位置：<code>{importedMeta.absolutePath}</code>
+                    </div>
                   </div>
                 ) : null}
               </div>
             )}
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
+          <section className="space-y-4">
             <div className="space-y-3 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
               <div className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
                 第二步：预览与字幕选段
@@ -720,16 +1075,36 @@ export function MediaCloneDialog({
                   <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
                     <span>当前时间：{formatTime(currentTime)}</span>
                     <span>总时长：{formatDurationLabel(mediaDuration)}</span>
+                    <span>已选时长：{selectedDuration > 0 ? `${selectedDuration.toFixed(2)} 秒` : "未完成切段"}</span>
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+                      下一刀：{nextWaveformCutTarget === "start" ? "开始" : "结束"}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
                     <button
                       type="button"
-                      onClick={() => setStartS(currentTime.toFixed(3))}
+                      onClick={handleWaveformCutAtPlayhead}
+                      className="rounded border border-amber-300 px-2 py-1 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                    >
+                      在播放头切一刀
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStartS(currentTime.toFixed(3));
+                        setNextWaveformCutTarget("start");
+                      }}
                       className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
                     >
                       设为开始
                     </button>
                     <button
                       type="button"
-                      onClick={() => setEndS(currentTime.toFixed(3))}
+                      onClick={() => {
+                        setEndS(currentTime.toFixed(3));
+                        setNextWaveformCutTarget("start");
+                      }}
                       className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
                     >
                       设为结束
@@ -739,12 +1114,35 @@ export function MediaCloneDialog({
                       onClick={() => {
                         setSelectionStart(null);
                         setSelectionEnd(null);
+                        setStartS("0");
+                        setEndS(mediaDuration > 0 ? mediaDuration.toFixed(3) : "");
+                        setNextWaveformCutTarget("start");
                       }}
                       className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-600 dark:hover:bg-neutral-800"
                     >
-                      清空选段
+                      清空切点
                     </button>
                   </div>
+
+                  {loadingWaveform ? (
+                    <div className="rounded-xl border border-dashed border-neutral-200 px-3 py-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                      正在生成波形...
+                    </div>
+                  ) : waveformResult ? (
+                    <MediaWaveformEditor
+                      peaks={waveformResult.peaks}
+                      durationS={waveformResult.durationS}
+                      currentTime={currentTime}
+                      startS={Number.isFinite(parsedStartS) ? parsedStartS : 0}
+                      endS={Number.isFinite(parsedEndS) ? parsedEndS : waveformResult.durationS}
+                      nextCutTarget={nextWaveformCutTarget}
+                      onCut={applyWaveformCut}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-neutral-200 px-3 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                      还没有可用波形，暂时先用下面的时间输入框手动切段。
+                    </div>
+                  )}
 
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="block text-xs text-neutral-600 dark:text-neutral-400">
@@ -754,7 +1152,10 @@ export function MediaCloneDialog({
                         step="0.001"
                         min="0"
                         value={startS}
-                        onChange={(event) => setStartS(event.target.value)}
+                        onChange={(event) => {
+                          setStartS(event.target.value);
+                          setNextWaveformCutTarget("start");
+                        }}
                         className="mt-1 w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
                       />
                     </label>
@@ -765,7 +1166,10 @@ export function MediaCloneDialog({
                         step="0.001"
                         min="0"
                         value={endS}
-                        onChange={(event) => setEndS(event.target.value)}
+                        onChange={(event) => {
+                          setEndS(event.target.value);
+                          setNextWaveformCutTarget("start");
+                        }}
                         className="mt-1 w-full rounded border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 dark:border-neutral-600 dark:bg-neutral-900"
                       />
                     </label>
@@ -863,6 +1267,79 @@ export function MediaCloneDialog({
                   当前还没有可用字幕。你仍然可以手动填写开始和结束时间作为兜底。
                 </div>
               )}
+
+              {hasSource ? (
+                <div className="space-y-3 rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-3 dark:border-blue-900/50 dark:bg-blue-950/20">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+                        选段预览
+                      </div>
+                      <div className="mt-1 text-xs text-neutral-600 dark:text-neutral-400">
+                        当前片段：{formatTime(Number.isFinite(parsedStartS) ? parsedStartS : 0)} - {formatTime(Number.isFinite(parsedEndS) ? parsedEndS : 0)}
+                        {" · "}
+                        {selectedCues.length > 0 ? `${selectedCues.length} 条字幕` : "手动时间段"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleConfirmSelection}
+                      disabled={!canConfirmSelection || generatingSelectionPreview}
+                      className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-200 dark:bg-blue-500 dark:hover:bg-blue-400 dark:disabled:bg-blue-950 dark:disabled:text-blue-300"
+                    >
+                      {generatingSelectionPreview ? "生成中..." : "确认片段并生成预览"}
+                    </button>
+                  </div>
+                  <div className="text-xs text-neutral-500 dark:text-neutral-400">
+                    这里会把你当前切好的片段临时裁成一段音频来试听，不落库。没有字幕也能直接用。
+                  </div>
+
+                  {selectionPreview && selectionPreviewUrl ? (
+                    <div className="space-y-3 rounded-lg border border-blue-200 bg-white/85 px-3 py-3 dark:border-blue-900/40 dark:bg-neutral-900/70">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs text-neutral-600 dark:text-neutral-400">
+                          已生成预览：{formatTime(selectionPreview.startS)} - {formatTime(selectionPreview.endS)}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void playSelectionPreview()}
+                            className="rounded border border-blue-300 bg-white px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-neutral-900 dark:text-blue-300 dark:hover:bg-blue-950"
+                          >
+                            播放选段
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetSelectionPreviewPlayback}
+                            className="rounded border border-neutral-300 bg-white px-3 py-1.5 text-xs text-neutral-700 hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                          >
+                            回到开头
+                          </button>
+                        </div>
+                      </div>
+                      {selectionPreview.selectedText ? (
+                        <div className="rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-neutral-600 dark:border-blue-900/40 dark:bg-neutral-900 dark:text-neutral-300">
+                          {selectionPreview.selectedText}
+                        </div>
+                      ) : null}
+                      {selectionPreviewStale ? (
+                        <div className="text-xs text-amber-700 dark:text-amber-300">
+                          当前切段已经改过了，这个播放器还是旧预览；再点一次“确认片段并生成预览”就会刷新成新的切段。
+                        </div>
+                      ) : null}
+                      <audio
+                        key={selectionPreviewUrl}
+                        ref={handleSelectionPreviewRef}
+                        src={selectionPreviewUrl}
+                        controls
+                        preload="metadata"
+                        onLoadedMetadata={handleSelectionPreviewLoadedMetadata}
+                        className="w-full"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </section>
 

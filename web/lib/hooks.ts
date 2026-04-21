@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import useSWR from "swr";
-import type { ChunkEdit, Episode, EpisodeSummary, StageName } from "./types";
+import type { Chunk, ChunkEdit, Episode, EpisodeSummary, StageName } from "./types";
 import type { components } from "./gen/openapi";
 import { api, getApiUrl } from "./api-client";
 import { connectSSE } from "./sse-client";
@@ -232,6 +232,30 @@ export async function retryChunk(
   return data!.flowRunId;
 }
 
+async function fetchError(res: Response): Promise<Error> {
+  let detail = `请求失败 (${res.status})`;
+  try {
+    const body = await res.json();
+    if (body?.detail) detail = body.detail;
+  } catch {
+    try {
+      detail = await res.text();
+    } catch {
+      // keep generic status message
+    }
+  }
+  return new Error(detail);
+}
+
+function authHeaders(extra?: HeadersInit): HeadersInit {
+  return {
+    ...(extra ?? {}),
+    ...(process.env.NEXT_PUBLIC_API_TOKEN
+      ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_API_TOKEN}` }
+      : {}),
+  };
+}
+
 export async function confirmChunkReview(
   epId: string,
   cid: string,
@@ -256,6 +280,55 @@ export async function confirmChunkReview(
     }
     throw new Error(detail);
   }
+}
+
+export async function updateChunkGap(
+  epId: string,
+  cid: string,
+  nextGapMs: number | null,
+): Promise<Chunk> {
+  const res = await fetch(
+    `${getApiUrl()}/episodes/${encodeURIComponent(epId)}/chunks/${encodeURIComponent(cid)}/gap`,
+    {
+      method: "PATCH",
+      credentials: "include",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ nextGapMs }),
+    },
+  );
+  if (!res.ok) throw await fetchError(res);
+  return await res.json() as Chunk;
+}
+
+export async function fetchChunkGapPreview(
+  epId: string,
+  cid: string,
+  gapMs: number,
+): Promise<Blob> {
+  const res = await fetch(
+    `${getApiUrl()}/episodes/${encodeURIComponent(epId)}/chunks/${encodeURIComponent(cid)}/gap-preview`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ gapMs }),
+    },
+  );
+  if (!res.ok) throw await fetchError(res);
+  return await res.blob();
+}
+
+export async function fetchEpisodeGapPreview(epId: string): Promise<Blob> {
+  const res = await fetch(
+    `${getApiUrl()}/episodes/${encodeURIComponent(epId)}/gap-preview`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: authHeaders(),
+    },
+  );
+  if (!res.ok) throw await fetchError(res);
+  return await res.blob();
 }
 
 export async function finalizeTake(

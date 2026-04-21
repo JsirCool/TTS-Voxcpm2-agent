@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import shutil
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +13,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, File, Form, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from server.core.bilibili_import import (
@@ -26,6 +30,9 @@ from server.core.domain import DomainError, FishTTSParams, _CamelBase
 from server.core.media_processing import (
     ApplyMode,
     CleanupMode,
+    MediaWaveformResult,
+    build_selection_preview_audio,
+    build_media_waveform,
     SubtitleCue,
     demucs_status,
     ffmpeg_status,
@@ -33,11 +40,12 @@ from server.core.media_processing import (
     process_media_with_optional_transcript,
     resolve_voice_library_path,
     resolve_whisperx_subtitles,
+    transcribe_source_audio_for_prompt,
     voice_source_root,
     write_trial_audio,
     write_voice_asset_metadata,
 )
-from server.core.tts_presets import normalize_tts_config, validate_tts_config
+from server.core.tts_presets import normalize_tts_config, resolve_audio_path, validate_tts_config
 from server.core.voxcpm_client import (
     DEFAULT_VOXCPM_URL,
     VoxCPMClient,
@@ -53,6 +61,37 @@ TRIAL_SAMPLE_TEXT = (
     "欢迎来到姜Sir的TTS工作台，如果觉得好用，请去GitHub给我点个star，"
     "你的支持是我继续前进的动力"
 )
+VOICE_SOURCE_AUDIO_SUFFIXES = {
+    ".aac",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+    ".wma",
+}
+LOCAL_MEDIA_PICK_SUFFIXES = {
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".qt",
+    ".wav",
+}
+LOCAL_MEDIA_PICK_FILTER = (
+    "媒体文件|*.mp4;*.mov;*.mkv;*.qt;*.mp3;*.wav;*.m4a|"
+    "所有文件|*.*"
+)
+VOICE_SOURCE_FILENAME_FORBIDDEN_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+def _quote_powershell_string(value: str) -> str:
+    """Escape a string for single-quoted PowerShell literals."""
+    return str(value).replace("'", "''")
 
 
 class MediaCapabilitiesResponse(_CamelBase):
@@ -71,6 +110,7 @@ class MediaCapabilitiesResponse(_CamelBase):
     demucs_error: str | None = None
     whisperx_error: str | None = None
     voice_source_dir: str
+    bilibili_import_dir: str
 
 
 class MediaProcessResponse(_CamelBase):
@@ -92,6 +132,7 @@ class BilibiliImportRequest(_CamelBase):
 
 class BilibiliImportResponse(_CamelBase):
     source_relative_path: str
+    absolute_path: str
     preview_url: str
     media_type: Literal["video", "audio"]
     title: str
@@ -127,6 +168,41 @@ class TrialSynthesisResponse(_CamelBase):
     sample_text: str
 
 
+class PromptAudioTranscribeRequest(_CamelBase):
+    prompt_audio_path: str
+
+
+class PromptAudioTranscribeResponse(_CamelBase):
+    prompt_text: str
+    audio_path: str
+
+
+class OpenFolderResponse(_CamelBase):
+    path: str
+
+
+class VoiceSourceUploadResponse(_CamelBase):
+    relative_audio_path: str
+    absolute_path: str
+    filename: str
+    size_bytes: int
+
+
+class LocalMediaPickResponse(_CamelBase):
+    source_relative_path: str
+    absolute_path: str
+    preview_url: str
+    media_type: Literal["video", "audio"]
+    filename: str
+    size_bytes: int
+
+
+class MediaWaveformResponse(_CamelBase):
+    duration_s: float
+    bins: int
+    peaks: list[float]
+
+
 async def _probe_service(url: str, path: str) -> tuple[bool, str | None]:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -145,6 +221,207 @@ async def _probe_whisperx(url: str) -> tuple[bool, str | None]:
 
 async def _probe_voxcpm(url: str) -> tuple[bool, str | None]:
     return await _probe_service(url, "/healthz")
+
+
+def _open_directory(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+        return
+    subprocess.Popen(["xdg-open", str(path)])
+
+
+def _bilibili_import_root() -> Path:
+    return voice_source_root() / "imported" / "bilibili"
+
+
+def _local_media_pick_root() -> Path:
+    return voice_source_root() / "imported" / "local-picker"
+
+
+def _pick_local_media_file(initial_dir: Path) -> Path | None:
+    if os.name != "nt":
+        raise OSError("当前仅支持 Windows 桌面环境本机文件选择器")
+
+    folder = initial_dir if initial_dir.exists() else voice_source_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    script = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;"
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$dialog = New-Object System.Windows.Forms.OpenFileDialog;"
+        "$dialog.Title = '选择素材文件';"
+        f"$dialog.Filter = '{_quote_powershell_string(LOCAL_MEDIA_PICK_FILTER)}';"
+        "$dialog.Multiselect = $false;"
+        "$dialog.CheckFileExists = $true;"
+        "$dialog.RestoreDirectory = $false;"
+        f"$dialog.InitialDirectory = '{_quote_powershell_string(str(folder))}';"
+        "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {"
+        "  Write-Output $dialog.FileName"
+        "}"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        raise OSError(detail)
+
+    selected = result.stdout.strip()
+    if not selected:
+        return None
+    return Path(selected).resolve()
+
+
+def _safe_voice_source_filename(filename: str | None) -> str:
+    raw_name = Path(filename or "prompt-audio.wav").name.strip()
+    cleaned = VOICE_SOURCE_FILENAME_FORBIDDEN_RE.sub("_", raw_name).strip(" ._")
+    if not cleaned:
+        cleaned = "prompt-audio.wav"
+    suffix = Path(cleaned).suffix.lower()
+    if suffix not in VOICE_SOURCE_AUDIO_SUFFIXES:
+        allowed = ", ".join(sorted(VOICE_SOURCE_AUDIO_SUFFIXES))
+        raise DomainError(
+            "invalid_input",
+            f"unsupported audio file type '{suffix or '(none)'}'; allowed: {allowed}",
+        )
+    return cleaned
+
+
+def _safe_local_media_filename(filename: str | None) -> str:
+    raw_name = Path(filename or "local-media.wav").name.strip()
+    cleaned = VOICE_SOURCE_FILENAME_FORBIDDEN_RE.sub("_", raw_name).strip(" ._")
+    suffix = Path(cleaned or raw_name).suffix.lower()
+    if not cleaned:
+        cleaned = f"local-media{suffix or '.wav'}"
+    suffix = Path(cleaned).suffix.lower()
+    if suffix not in LOCAL_MEDIA_PICK_SUFFIXES:
+        allowed = ", ".join(sorted(LOCAL_MEDIA_PICK_SUFFIXES))
+        raise DomainError(
+            "invalid_input",
+            f"unsupported media file type '{suffix or '(none)'}'; allowed: {allowed}",
+        )
+    return cleaned
+
+
+def _dedupe_voice_source_path(folder: Path, filename: str) -> Path:
+    root = folder.resolve()
+    candidate = (root / filename).resolve(strict=False)
+    if candidate != root and root not in candidate.parents:
+        raise DomainError("invalid_input", "uploaded filename escapes voice_sourse")
+    if not candidate.exists():
+        return candidate
+
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for index in range(1, 1000):
+        next_candidate = (root / f"{stem}-{index}{suffix}").resolve(strict=False)
+        if not next_candidate.exists():
+            return next_candidate
+
+    raise DomainError("invalid_input", f"too many files named like '{filename}'")
+
+
+def _import_picked_local_media(selected_path: Path) -> tuple[str, Path]:
+    source = selected_path.resolve(strict=True)
+    if not source.is_file():
+        raise DomainError("invalid_input", f"素材不是文件：{source}")
+
+    suffix = source.suffix.lower()
+    if suffix not in LOCAL_MEDIA_PICK_SUFFIXES:
+        allowed = ", ".join(sorted(LOCAL_MEDIA_PICK_SUFFIXES))
+        raise DomainError(
+            "invalid_input",
+            f"unsupported media file type '{suffix or '(none)'}'; allowed: {allowed}",
+        )
+
+    root = voice_source_root().resolve()
+    imported_root = (root / "imported").resolve()
+    if source == imported_root or imported_root in source.parents:
+        return source.relative_to(root).as_posix(), source
+
+    destination_root = _local_media_pick_root()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = _dedupe_voice_source_path(destination_root, _safe_local_media_filename(source.name))
+    shutil.copy2(source, destination)
+    return destination.relative_to(root).as_posix(), destination
+
+
+def _pick_local_media_file_tk(initial_dir: Path) -> Path | None:
+    if os.name != "nt":
+        raise OSError("当前仅支持 Windows 桌面环境本机文件选择器")
+
+    folder = initial_dir if initial_dir.exists() else voice_source_root()
+    folder.mkdir(parents=True, exist_ok=True)
+    script = (
+        "import tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        f"initialdir = {str(folder)!r}\n"
+        "root = tk.Tk()\n"
+        "root.withdraw()\n"
+        "root.attributes('-topmost', True)\n"
+        "root.update_idletasks()\n"
+        "path = filedialog.askopenfilename(\n"
+        "    title='选择素材文件',\n"
+        "    initialdir=initialdir,\n"
+        "    filetypes=[('媒体文件', '*.mp4 *.mov *.mkv *.qt *.mp3 *.wav *.m4a'), ('所有文件', '*.*')],\n"
+        ")\n"
+        "if path:\n"
+        "    print(path)\n"
+        "root.destroy()\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        raise OSError(detail)
+
+    selected = result.stdout.strip()
+    if not selected:
+        return None
+    return Path(selected).resolve()
+
+
+def _pick_local_media_file(initial_dir: Path) -> Path | None:
+    """Backward-compatible alias kept for older call sites."""
+    return _pick_local_media_file_tk(initial_dir)
+
+
+async def _write_uploaded_file(upload: UploadFile, destination: Path) -> int:
+    size = 0
+    try:
+        with destination.open("wb") as out:
+            while True:
+                chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                out.write(chunk)
+    except OSError as exc:
+        raise DomainError("invalid_input", f"failed to save uploaded audio: {exc}") from exc
+    finally:
+        await upload.close()
+
+    if size <= 0:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise DomainError("invalid_input", "uploaded audio file is empty")
+    return size
 
 
 def _subtitle_cues_to_response(cues: list[SubtitleCue]) -> list[SubtitleCueResponse]:
@@ -242,6 +519,7 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
         demucs_error=None if demucs.available else demucs.detail,
         whisperx_error=whisperx_error,
         voice_source_dir=str(voice_source_root()),
+        bilibili_import_dir=str(_bilibili_import_root()),
     )
 
 
@@ -264,6 +542,7 @@ async def import_bilibili_media_route(payload: BilibiliImportRequest) -> Bilibil
 
     return BilibiliImportResponse(
         source_relative_path=result.relative_source_path,
+        absolute_path=str(result.absolute_path),
         preview_url=build_preview_url(result.relative_source_path),
         media_type=result.media_type,
         title=result.title,
@@ -280,6 +559,171 @@ async def get_media_source(path: str = Query(..., min_length=1)) -> FileResponse
         source_path,
         media_type=guess_media_type(source_path),
         filename=source_path.name,
+    )
+
+
+@router.post("/media/waveform", response_model=MediaWaveformResponse)
+async def get_media_waveform(
+    media: UploadFile | None = File(None),
+    source_relative_path: str | None = Form(None),
+    bins: int = Form(320),
+) -> MediaWaveformResponse:
+    if bool(media) == bool(source_relative_path):
+        raise DomainError("invalid_input", "media 和 source_relative_path 必须二选一")
+
+    if source_relative_path:
+        source_path = resolve_voice_library_path(source_relative_path, allowed_prefixes=("imported", "assets"))
+        result = await asyncio.to_thread(build_media_waveform, source_path, bins=bins)
+        return MediaWaveformResponse(duration_s=result.duration_s, bins=len(result.peaks), peaks=result.peaks)
+
+    assert media is not None
+    filename = media.filename or "waveform"
+    suffix = Path(filename).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(prefix="tts-waveform-upload-", suffix=suffix, delete=False) as temp:
+        temp_path = Path(temp.name)
+        temp.write(await media.read())
+
+    try:
+        result = await asyncio.to_thread(build_media_waveform, temp_path, bins=bins)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return MediaWaveformResponse(duration_s=result.duration_s, bins=len(result.peaks), peaks=result.peaks)
+
+
+@router.post("/media/selection-preview")
+async def get_media_selection_preview(
+    media: UploadFile | None = File(None),
+    source_relative_path: str | None = Form(None),
+    start_s: float = Form(...),
+    end_s: float = Form(...),
+) -> Response:
+    if bool(media) == bool(source_relative_path):
+        raise DomainError("invalid_input", "media 鍜?source_relative_path 蹇呴』浜岄€変竴")
+
+    if source_relative_path:
+        source_path = resolve_voice_library_path(source_relative_path, allowed_prefixes=("imported", "assets"))
+        audio_bytes = await asyncio.to_thread(
+            build_selection_preview_audio,
+            source_path,
+            start_s=start_s,
+            end_s=end_s,
+        )
+        return Response(content=audio_bytes, media_type="audio/wav")
+
+    assert media is not None
+    filename = media.filename or "selection-preview"
+    suffix = Path(filename).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(prefix="tts-selection-preview-upload-", suffix=suffix, delete=False) as temp:
+        temp_path = Path(temp.name)
+        temp.write(await media.read())
+
+    try:
+        audio_bytes = await asyncio.to_thread(
+            build_selection_preview_audio,
+            temp_path,
+            start_s=start_s,
+            end_s=end_s,
+        )
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return Response(content=audio_bytes, media_type="audio/wav")
+
+
+@router.post("/media/voice-source/open", response_model=OpenFolderResponse)
+async def open_voice_source_folder() -> OpenFolderResponse:
+    folder = voice_source_root()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(_open_directory, folder)
+    except OSError as exc:
+        raise DomainError("invalid_input", f"无法打开素材文件夹：{exc}") from exc
+    return OpenFolderResponse(path=str(folder))
+
+
+@router.post("/media/imported-bilibili/open", response_model=OpenFolderResponse)
+async def open_bilibili_import_folder() -> OpenFolderResponse:
+    folder = _bilibili_import_root()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(_open_directory, folder)
+    except OSError as exc:
+        raise DomainError("invalid_input", f"无法打开 B 站下载目录：{exc}") from exc
+    return OpenFolderResponse(path=str(folder))
+
+
+@router.post("/media/local-file/pick", response_model=LocalMediaPickResponse)
+async def pick_local_media_source() -> LocalMediaPickResponse:
+    try:
+        selected_path = await asyncio.to_thread(_pick_local_media_file_tk, _bilibili_import_root())
+    except OSError as exc:
+        raise DomainError("invalid_input", f"无法打开本机文件选择器：{exc}") from exc
+
+    if selected_path is None:
+        raise DomainError("cancelled", "已取消选择本地文件")
+
+    relative_path, absolute_path = await asyncio.to_thread(_import_picked_local_media, selected_path)
+    media_type = guess_media_type(absolute_path)
+    return LocalMediaPickResponse(
+        source_relative_path=relative_path,
+        absolute_path=str(absolute_path),
+        preview_url=build_preview_url(relative_path),
+        media_type="video" if media_type.startswith("video/") else "audio",
+        filename=absolute_path.name,
+        size_bytes=absolute_path.stat().st_size,
+    )
+
+
+@router.post("/media/voice-source/upload", response_model=VoiceSourceUploadResponse)
+async def upload_voice_source_file(media: UploadFile = File(...)) -> VoiceSourceUploadResponse:
+    filename = _safe_voice_source_filename(media.filename)
+    folder = voice_source_root()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DomainError("invalid_input", f"cannot create voice_sourse folder: {exc}") from exc
+
+    destination = _dedupe_voice_source_path(folder, filename)
+    size_bytes = await _write_uploaded_file(media, destination)
+    relative_audio_path = destination.relative_to(folder.resolve()).as_posix()
+    return VoiceSourceUploadResponse(
+        relative_audio_path=relative_audio_path,
+        absolute_path=str(destination),
+        filename=destination.name,
+        size_bytes=size_bytes,
+    )
+
+
+@router.post("/media/prompt-audio/transcribe", response_model=PromptAudioTranscribeResponse)
+async def transcribe_prompt_audio(body: PromptAudioTranscribeRequest) -> PromptAudioTranscribeResponse:
+    prompt_audio_path = body.prompt_audio_path.strip()
+    if not prompt_audio_path:
+        raise DomainError("invalid_input", "prompt_audio_path cannot be empty")
+
+    source_path = resolve_audio_path(prompt_audio_path)
+    if source_path is None or not source_path.exists():
+        raise DomainError("not_found", f"Prompt Audio not found: {prompt_audio_path}")
+    if not source_path.is_file():
+        raise DomainError("invalid_input", f"Prompt Audio is not a file: {prompt_audio_path}")
+
+    whisperx_ok, whisperx_error = await _probe_whisperx(DEFAULT_WHISPERX_URL)
+    if not whisperx_ok:
+        raise DomainError(
+            "whisperx_unavailable",
+            whisperx_error or "WhisperX is not ready, cannot transcribe Prompt Text",
+        )
+
+    prompt_text = await transcribe_source_audio_for_prompt(source_path, whisperx_url=DEFAULT_WHISPERX_URL)
+    return PromptAudioTranscribeResponse(
+        prompt_text=prompt_text,
+        audio_path=str(source_path),
     )
 
 

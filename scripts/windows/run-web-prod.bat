@@ -29,6 +29,25 @@ if not exist ".next\standalone\server.js" (
     )
 )
 
+if exist ".next\static" (
+    if not exist ".next\standalone\.next" mkdir ".next\standalone\.next"
+    if exist ".next\standalone\.next\static" rmdir /s /q ".next\standalone\.next\static"
+    xcopy ".next\static" ".next\standalone\.next\static\" /E /I /Y >nul
+    if errorlevel 1 (
+        popd
+        exit /b %errorlevel%
+    )
+)
+
+if exist "public" (
+    if exist ".next\standalone\public" rmdir /s /q ".next\standalone\public"
+    xcopy "public" ".next\standalone\public\" /E /I /Y >nul
+    if errorlevel 1 (
+        popd
+        exit /b %errorlevel%
+    )
+)
+
 if "%CONSOLE_MODE%"=="1" (
     "%NODE_EXE%" ".next\standalone\server.js"
 ) else (

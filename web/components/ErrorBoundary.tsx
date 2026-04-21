@@ -10,10 +10,43 @@ interface State {
   error: Error | null;
 }
 
+function isChunkLoadError(error: Error): boolean {
+  const message = error.message || String(error);
+  return (
+    message.includes("Failed to load chunk") ||
+    message.includes("ChunkLoadError") ||
+    message.includes("Loading chunk") ||
+    message.includes("/_next/static/chunks/")
+  );
+}
+
 export class ErrorBoundary extends Component<Props, State> {
+  private clearReloadGuard: number | null = null;
+
   constructor(props: Props) {
     super(props);
     this.state = { error: null };
+  }
+
+  componentDidMount() {
+    if (typeof window === "undefined") return;
+    this.clearReloadGuard = window.setTimeout(() => {
+      window.sessionStorage.removeItem("tts-harness:chunk-load-reloaded");
+    }, 5000);
+  }
+
+  componentWillUnmount() {
+    if (this.clearReloadGuard !== null) {
+      window.clearTimeout(this.clearReloadGuard);
+    }
+  }
+
+  componentDidCatch(error: Error) {
+    if (typeof window === "undefined" || !isChunkLoadError(error)) return;
+    const key = "tts-harness:chunk-load-reloaded";
+    if (window.sessionStorage.getItem(key) === "1") return;
+    window.sessionStorage.setItem(key, "1");
+    window.location.reload();
   }
 
   static getDerivedStateFromError(error: Error): State {

@@ -26,6 +26,7 @@ export interface MediaCapabilities {
   demucsError?: string | null;
   whisperxError?: string | null;
   voiceSourceDir: string;
+  bilibiliImportDir: string;
 }
 
 export interface MediaProcessResult {
@@ -42,12 +43,22 @@ export interface MediaProcessResult {
 
 export interface BilibiliImportResult {
   sourceRelativePath: string;
+  absolutePath: string;
   previewUrl: string;
   mediaType: "video" | "audio";
   title: string;
   owner?: string | null;
   durationS: number;
   downloadTarget: BilibiliDownloadTarget;
+}
+
+export interface LocalMediaPickResult {
+  sourceRelativePath: string;
+  absolutePath: string;
+  previewUrl: string;
+  mediaType: "video" | "audio";
+  filename: string;
+  sizeBytes: number;
 }
 
 export interface SubtitleCue {
@@ -68,6 +79,12 @@ export interface TrialSynthesisResult {
   trialPreviewUrl: string;
   durationS: number;
   sampleText: string;
+}
+
+export interface MediaWaveformResult {
+  durationS: number;
+  bins: number;
+  peaks: number[];
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -116,6 +133,25 @@ export async function importBilibiliMedia(input: {
     }),
   });
   return parseJsonResponse<BilibiliImportResult>(response);
+}
+
+export async function pickLocalMediaSource(): Promise<LocalMediaPickResult> {
+  const response = await fetch(`${getApiUrl()}/media/local-file/pick`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+  });
+  return parseJsonResponse<LocalMediaPickResult>(response);
+}
+
+export async function openBilibiliImportFolder(): Promise<string> {
+  const response = await fetch(`${getApiUrl()}/media/imported-bilibili/open`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+  });
+  const body = await parseJsonResponse<{ path: string }>(response);
+  return body.path;
 }
 
 export async function resolveMediaSubtitles(input: {
@@ -172,6 +208,64 @@ export async function processCloneMedia(input: {
     body: form,
   });
   return parseJsonResponse<MediaProcessResult>(response);
+}
+
+export async function fetchMediaWaveform(input: {
+  file?: File | null;
+  sourceRelativePath?: string | null;
+  bins?: number;
+}): Promise<MediaWaveformResult> {
+  const form = new FormData();
+  if (input.file) {
+    form.append("media", input.file);
+  }
+  if (input.sourceRelativePath) {
+    form.append("source_relative_path", input.sourceRelativePath);
+  }
+  form.append("bins", String(input.bins ?? 2400));
+
+  const response = await fetch(`${getApiUrl()}/media/waveform`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: form,
+  });
+  return parseJsonResponse<MediaWaveformResult>(response);
+}
+
+export async function requestSelectionPreview(input: {
+  file?: File | null;
+  sourceRelativePath?: string | null;
+  startS: number;
+  endS: number;
+}): Promise<Blob> {
+  const form = new FormData();
+  if (input.file) {
+    form.append("media", input.file);
+  }
+  if (input.sourceRelativePath) {
+    form.append("source_relative_path", input.sourceRelativePath);
+  }
+  form.append("start_s", String(input.startS));
+  form.append("end_s", String(input.endS));
+
+  const response = await fetch(`${getApiUrl()}/media/selection-preview`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: form,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw Object.assign(
+      new Error(body?.detail || `请求失败 (${response.status})`),
+      {
+        code: body?.error,
+        status: response.status,
+      },
+    );
+  }
+  return response.blob();
 }
 
 export async function requestTrialSynthesis(input: {

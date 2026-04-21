@@ -11,6 +11,7 @@ from server.core.p6_logic import (
     build_ffmpeg_concat_list,
     compute_chunk_offsets,
     compute_gap_sequence,
+    compute_timeline_layout,
     compute_total_duration,
     format_srt_timestamp,
     interleave_with_silences,
@@ -68,6 +69,51 @@ def test_compute_gap_sequence_mirrors_offsets():
     assert compute_gap_sequence(chunks, 0.2, 0.5) == pytest.approx([0.2, 0.5])
     assert compute_gap_sequence([], 0.2, 0.5) == []
     assert compute_gap_sequence(chunks[:1], 0.2, 0.5) == []
+
+
+def test_custom_positive_gap_overrides_default():
+    chunks = [
+        ChunkTiming("c1", "shot01", 0, 1.0, next_gap_ms=750),
+        ChunkTiming("c2", "shot01", 1, 1.0),
+    ]
+    layout = compute_timeline_layout(chunks, padding_s=0.2, shot_gap_s=0.5)
+    assert layout.offsets == pytest.approx([0.0, 1.75])
+    assert layout.requested_gaps == pytest.approx([0.75])
+    assert layout.effective_gaps == pytest.approx([0.75])
+    assert layout.total_duration_s == pytest.approx(2.75)
+
+
+def test_custom_negative_gap_overlaps_next_chunk():
+    chunks = [
+        ChunkTiming("c1", "shot01", 0, 1.0, next_gap_ms=-300),
+        ChunkTiming("c2", "shot01", 1, 0.8),
+    ]
+    layout = compute_timeline_layout(chunks, padding_s=0.2, shot_gap_s=0.5)
+    assert layout.offsets == pytest.approx([0.0, 0.7])
+    assert layout.requested_gaps == pytest.approx([-0.3])
+    assert layout.effective_gaps == pytest.approx([-0.3])
+    assert layout.total_duration_s == pytest.approx(1.5)
+
+
+def test_negative_gap_is_clamped_to_min_next_start():
+    chunks = [
+        ChunkTiming("c1", "shot01", 0, 1.0, next_gap_ms=-5000),
+        ChunkTiming("c2", "shot01", 1, 0.8),
+    ]
+    layout = compute_timeline_layout(chunks, padding_s=0.2, shot_gap_s=0.5)
+    assert layout.offsets == pytest.approx([0.0, 0.05])
+    assert layout.requested_gaps == pytest.approx([-5.0])
+    assert layout.effective_gaps == pytest.approx([-0.95])
+    assert layout.total_duration_s == pytest.approx(1.0)
+
+
+def test_null_gap_uses_cross_shot_default():
+    chunks = [
+        ChunkTiming("c1", "shot01", 0, 1.0),
+        ChunkTiming("c2", "shot02", 0, 1.0),
+    ]
+    assert compute_chunk_offsets(chunks, padding_s=0.2, shot_gap_s=0.5) == pytest.approx([0.0, 1.5])
+    assert compute_gap_sequence(chunks, padding_s=0.2, shot_gap_s=0.5) == pytest.approx([0.5])
 
 
 def test_sort_chunk_timings_is_deterministic():

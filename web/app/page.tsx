@@ -5,7 +5,16 @@ import useSWR from "swr";
 import { Moon, Server, Sun } from "lucide-react";
 import { toast } from "sonner";
 import { getApiUrl } from "@/lib/api-client";
-import { useEpisodes, useEpisode, useEpisodeLogs, getAudioUrl, exportEpisode as exportEpisodeToLocal } from "@/lib/hooks";
+import {
+  fetchChunkGapPreview,
+  fetchEpisodeGapPreview,
+  getAudioUrl,
+  updateChunkGap,
+  useEpisode,
+  useEpisodeLogs,
+  useEpisodes,
+  exportEpisode as exportEpisodeToLocal,
+} from "@/lib/hooks";
 import { STAGE_SHORT_LABEL } from "@/lib/stage-labels";
 import type { Episode, StageName } from "@/lib/types";
 import { useHarnessStore } from "@/lib/store";
@@ -342,6 +351,24 @@ export default function Page() {
     { errorPrefix: "确认复核失败" },
   );
 
+  const handleChunkGapChange = useCallback(async (cid: string, nextGapMs: number | null) => {
+    if (!episode) return;
+    await updateChunkGap(episode.id, cid, nextGapMs);
+    await mutateDetail();
+    await mutateList();
+    toast.success(nextGapMs == null ? "已重置 chunk 空隙" : `已设置 chunk 空隙：${nextGapMs} ms`);
+  }, [episode, mutateDetail, mutateList]);
+
+  const handleChunkGapPreview = useCallback(async (cid: string, gapMs: number) => {
+    if (!episode) throw new Error("请先选择 episode");
+    return await fetchChunkGapPreview(episode.id, cid, gapMs);
+  }, [episode]);
+
+  const handleEpisodeGapPreview = useCallback(async () => {
+    if (!episode) throw new Error("请先选择 episode");
+    return await fetchEpisodeGapPreview(episode.id);
+  }, [episode]);
+
   const [execBatchRetry] = useAction(
     useCallback(async (stage: StageName, chunkIds: string[]) => {
       if (!episode || chunkIds.length === 0) return;
@@ -566,6 +593,9 @@ export default function Page() {
                       onSynthesize={execSynthesize}
                       onQuickRetry={execQuickRetry}
                       onConfirmReview={execConfirmReview}
+                      onGapChange={handleChunkGapChange}
+                      onGapPreview={handleChunkGapPreview}
+                      onEpisodeGapPreview={handleEpisodeGapPreview}
                       pendingStages={pendingChunkStages}
                       getAudioUrl={getAudioUrl}
                     />

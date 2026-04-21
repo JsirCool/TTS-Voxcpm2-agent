@@ -1,21 +1,33 @@
 # TTS VoxCPM2 Agent Harness
 
-一个本地优先的 TTS 生产工作台：把脚本、文本、B 站链接、本地音视频素材，变成可审核、可重跑、可导出的配音、字幕和 Remotion 时间轴素材。
+> 一个本地优先的中文 TTS 生产工作台。  
+> 把脚本、纯文本、B 站链接或本地音视频素材，变成可审听、可返工、可导出的配音、字幕和 Remotion 时间轴素材。
 
-> 当前版本默认使用 **本地 VoxCPM2 + 本地 WhisperX**，面向 Windows 本地工作流，不依赖云端 TTS 或云端 ASR 服务。
+## 项目定位
+
+这个仓库面向 Windows 本地工作流，默认使用：
+
+- 本地 `VoxCPM2` 进行语音合成
+- 本地 `WhisperX` 进行字幕解析、转写和复核
+- 本地 `FastAPI + Next.js` 提供工作台
+- `PostgreSQL + MinIO + Prefect` 负责任务编排和产物管理
+
+如果你希望把“生成配音”做成一条可重复、可人工干预、可导出的完整链路，这个项目就是为这个目标设计的。
 
 ## 功能亮点
 
 | 能力 | 说明 |
-|---|---|
-| 本地配音 | 通过本地 `VoxCPM2` HTTP 服务完成 `声音设计 / 可控克隆 / 极致克隆` |
-| 本地复核 | 通过本地 `WhisperX` 做 ASR、字幕、复核和字幕选段 |
-| 素材处理 | 支持本地 `mp4 / mov / mkv / mp3 / wav / m4a`，也支持 B 站公开视频链接导入 |
-| 字幕选段 | 优先使用 B 站原生字幕；没有原生字幕时，由用户确认是否启用 WhisperX 自动转写 |
-| 返工工作台 | 支持按 chunk 快捷重跑、Take 历史、人工确认复核、批量处理 |
-| Remotion 导出 | 导出 `shot*.wav`、`episode.wav`、`episode.srt`、`remotion-manifest.json` |
+| --- | --- |
+| 本地 TTS 工作流 | 支持 `声音设计 / 可控克隆 / 极致克隆` 三种模式 |
+| 素材处理 | 支持本地 `mp4 / mov / mkv / mp3 / wav / m4a`，也支持 B 站公开视频导入 |
+| 字幕与选段 | 优先使用 B 站原生字幕；没有原生字幕时可启用 WhisperX 自动转写 |
+| 波形切段 | 第二步支持波形预览、切点选择、`Ctrl + 滚轮` 缩放、`Shift + 滚轮` 平移 |
+| 选段预览 | 选好片段后可直接生成临时预览音频，不落库 |
+| Chunk 工作台 | 支持按 chunk 返工、take 历史、人工复核、批量处理 |
+| Chunk 空隙编辑 | 支持调节 chunk 与下一个 chunk 之间的间隙，支持负值重叠和拼接预览 |
+| 导出能力 | 可导出 `shot*.wav`、整集 `episode.wav`、字幕、durations 和 Remotion manifest |
 
-## 架构
+## 系统架构
 
 ```text
 Browser
@@ -27,34 +39,22 @@ Browser
       -> local whisperx-svc (:7860)
 ```
 
-前端里的阶段短词对应关系：
+前端阶段标签与后端流程大致对应：
 
 | 阶段 | 中文标签 | 含义 |
-|---|---|---|
-| `P1` | `切稿` | 脚本切分 |
-| `P1c` | `初检` | 初步校验 |
-| `P2` | `配音` | 语音合成 |
-| `P2c` | `校音` | 音频校验 |
-| `P2v` | `复核` | ASR 复核 |
-| `P5` | `出字` | 字幕生成 |
-| `P6` | `拼轨` | 整集音频拼接 |
-| `P6v` | `总检` | 最终校验 |
+| --- | --- | --- |
+| `P1` | 切稿 | 脚本切分 |
+| `P1c` | 初检 | 初步校验 |
+| `P2` | 配音 | 语音合成 |
+| `P2c` | 校音 | 音频检查 |
+| `P2v` | 复核 | ASR 复核 |
+| `P5` | 出字 | 字幕生成 |
+| `P6` | 拼轨 | 整集音频拼接 |
+| `P6v` | 总检 | 最终校验 |
 
-## Git 仓库不包含什么
+## 快速开始
 
-这个仓库只保存源码、脚本、配置模板和文档，不会上传本地运行资产。
-
-请不要把这些内容提交到 GitHub：
-
-- Python 虚拟环境，例如 `E:\VC\venv312`
-- Hugging Face / WhisperX 缓存，例如 `E:\VC\hf-cache`
-- VoxCPM2 模型文件，例如 `E:\VC\pretrained_models\VoxCPM2`
-- `voice_sourse` 下的本地参考音频
-- 日志、对象存储镜像、导出缓存、`node_modules`、前端构建产物
-
-换句话说：GitHub 上放代码，每台机器自己准备模型、缓存和参考音频。
-
-## Windows 快速开始
+### 1. 准备环境
 
 先安装这些软件：
 
@@ -64,7 +64,7 @@ Browser
 - `pnpm`
 - `ffmpeg` 和 `ffprobe`
 
-克隆仓库并创建本地 `.env`：
+### 2. 克隆仓库并准备 `.env`
 
 ```powershell
 git clone https://github.com/JsirCool/TTS-Voxcpm2-agent.git
@@ -72,7 +72,9 @@ cd TTS-Voxcpm2-agent
 copy .env.dev .env
 ```
 
-安装依赖，推荐先用一个统一的 Python 环境：
+### 3. 安装依赖
+
+推荐使用统一的 Python 虚拟环境：
 
 ```powershell
 python -m venv .venv
@@ -83,12 +85,9 @@ python -m venv .venv
 pnpm --dir .\web install
 ```
 
-然后检查这两个文件：
+### 4. 检查本地配置
 
-- `.env`
-- `scripts/windows/_env.bat`
-
-至少要确认这些值：
+至少确认这些值可用：
 
 - `VENV_PY`
 - `VOXCPM_MODEL_PATH`
@@ -97,40 +96,45 @@ pnpm --dir .\web install
 - `WHISPERX_URL`
 - `NEXT_PUBLIC_API_URL`
 
-如果你的机器不使用代理，请清空或删除：
+如果你的机器不走代理，建议清空或删除：
 
 - `HTTP_PROXY`
 - `HTTPS_PROXY`
 
-启动整套本地服务：
+### 5. 启动整套本地服务
 
 ```powershell
 .\start-local-stack.bat
 ```
 
-启动脚本会自动启动 Docker 基础设施、执行数据库迁移、后台启动 VoxCPM / WhisperX / API / Web，并打开：
+启动脚本会自动：
+
+- 启动 Docker 基础设施
+- 执行数据库迁移
+- 启动 VoxCPM、WhisperX、API、Web
+- 打开工作台页面
+
+默认地址：
 
 ```text
 http://localhost:3010
 ```
 
-关闭整套本地服务：
+关闭服务：
 
 ```powershell
 .\stop-local-stack.bat
 ```
 
-如果你想看到服务窗口和日志，用调试启动：
+如果你想看到服务窗口和日志，使用调试启动：
 
 ```powershell
 .\start-local-stack-debug.bat
 ```
 
-更详细的 Windows 启动说明见 [WINDOWS-START.md](WINDOWS-START.md)。
+更详细的 Windows 说明见 [WINDOWS-START.md](WINDOWS-START.md)。
 
-## 本地路径约定
-
-参考音频路径统一按相对路径保存，并从 `voice_sourse` 目录解析。
+## 常用目录约定
 
 推荐目录结构：
 
@@ -139,47 +143,118 @@ E:\VC\tts-agent-harness
 E:\VC\voice_sourse
 ```
 
-如果配置里写：
+项目里保留了历史目录名 `voice_sourse` 这一拼写，用来兼容现有本地数据。
 
-```json
-{
-  "reference_audio_path": "111.m4a"
-}
-```
+重要目录：
 
-实际会解析到：
+- 仓库根目录：`E:\VC\tts-agent-harness`
+- 声音素材目录：`E:\VC\voice_sourse`
+- B 站导入目录：`E:\VC\voice_sourse\imported\bilibili`
+- 处理后的声音资产：`voice_sourse/assets/<voice-name>/`
 
-```text
-E:\VC\voice_sourse\111.m4a
-```
+参考音频路径会优先按相对路径保存，并从 `voice_sourse` 下解析。
 
-目录名 `voice_sourse` 保持这个拼写，是为了兼容现有本地数据。
+## 素材处理工作流
 
-## TTS 三种模式
+在前端 `TTS 配置` 附近打开 `素材处理`。
+
+支持输入：
+
+- 本地文件：`mp4`、`mov`、`mkv`、`mp3`、`wav`、`m4a`
+- B 站公开链接：`bilibili.com/video/BV...`、`bilibili.com/video/av...`、`b23.tv/...`
+
+典型流程：
+
+1. 导入本地文件，或粘贴 B 站链接。
+2. 在第二步里预览音频/视频并查看波形。
+3. 用波形切段或字幕选段确定开始和结束位置。
+4. 点击“确认片段并生成预览”，试听切好的片段。
+5. 命名声音素材并选择清理模式。
+6. 试听原始片段、处理后素材和固定试配音。
+7. 满意后再应用到当前 Episode。
+
+第二步的波形编辑器支持：
+
+- 点击波形切点
+- 第一刀作为开始，第二刀作为结束
+- `Ctrl + 滚轮` 缩放
+- `Shift + 滚轮` 平移
+- 在播放头位置切一刀
+- 生成切好片段的临时预览音频
+
+字幕策略：
+
+- B 站视频优先使用原生字幕
+- 没有原生字幕时，可手动启用 WhisperX 自动转写
+- WhisperX 自动识别语言，不做翻译
+
+当前 B 站导入限制：
+
+- 仅支持公开视频
+- 不支持登录 Cookie
+- 不支持会员、付费或受保护内容
+- 不支持直播
+- 不支持收藏夹、合集和批量导入
+
+## Chunk 工作台与拼接
+
+### Chunk 空隙编辑
+
+Chunk 列表支持打开“chunk 空隙”面板。每个 chunk 都可以控制它与下一个 chunk 的间隙：
+
+- 字段名：`nextGapMs`
+- 默认值：`0ms`
+- 正值：插入静音
+- 负值：让下一段提前进入，与当前段尾部重叠
+
+支持的能力：
+
+- 滑条拖动
+- 数字输入
+- 重置为默认 gap
+- 当前边界拼接预览
+- 整体拼接预览
+
+这些 gap 设置不会触发重新 TTS，只影响：
+
+- 最终拼接
+- 整体预览
+- 导出产物
+
+### 返工与复核
+
+工作台还支持：
+
+- 按 chunk 单独重跑
+- take 历史保留
+- 人工确认复核
+- 批量处理失败 chunk
+
+## 三种 TTS 模式
 
 | 模式 | 适合场景 | 关键字段 |
-|---|---|---|
+| --- | --- | --- |
 | `声音设计 / Voice Design` | 不给参考音频，只靠文字描述生成音色 | `control_prompt` |
-| `可控克隆 / Controllable Cloning` | 保留某个人的音色，同时可控制语气和风格 | `reference_audio_path`，可选 `control_prompt` |
-| `极致克隆 / Ultimate Cloning` | 给一段前文音频和精确文本，让模型续写式复现 | `prompt_audio_path`、`prompt_text` |
+| `可控克隆 / Controllable Cloning` | 保留某个人的音色，同时控制语气和风格 | `reference_audio_path`，可选 `control_prompt` |
+| `极致克隆 / Ultimate Cloning` | 给一段前文音频和精确文本，让模型延续式复现 | `prompt_audio_path`、`prompt_text` |
 
-合成前会做参数互斥清洗：
+合成前会做参数互斥清理：
 
-- `声音设计` 会清掉音频参考字段。
-- `可控克隆` 会清掉 `prompt_audio_path` 和 `prompt_text`。
-- `极致克隆` 会清掉 `reference_audio_path` 和 `control_prompt`。
-- chunk 级覆盖参数不会串到不兼容模式里。
+- `声音设计` 会清理音频参考字段
+- `可控克隆` 会清理 `prompt_audio_path` 和 `prompt_text`
+- `极致克隆` 会清理 `reference_audio_path` 和 `control_prompt`
 
-`极致克隆` 最重要的是音频和 `prompt_text` 精确对齐。素材处理弹窗里，`15s` 是推荐样本时长，`40s` 是硬上限。
+对于 `极致克隆`，最重要的是 `prompt_audio_path` 与 `prompt_text` 的精确对齐。  
+素材处理弹窗里的 `15s` 是推荐长度，`40s` 是硬上限。
 
 ## 新建 Episode
 
-目前有两种方式：
+目前支持两种输入方式：
 
 1. 上传 `script.json`
-2. 直接粘贴文本，由前端自动转成内部 JSON
+2. 直接粘贴文本，由前端自动转换成内部 JSON
 
-最小脚本格式：
+最小脚本格式示例：
 
 ```json
 {
@@ -191,59 +266,11 @@ E:\VC\voice_sourse\111.m4a
 }
 ```
 
-`segment` 可以理解成一个镜头块或段落块。系统会再把每个 `segment` 拆成更小的合成 `chunk`。
-
-## 素材处理：从视频或音频生成克隆素材
-
-在前端 `TTS 配置` 旁边打开 `素材处理`。
-
-支持输入：
-
-- 本地文件：`mp4`、`mov`、`mkv`、`mp3`、`wav`、`m4a`
-- B 站公开视频链接：`bilibili.com/video/BV...`、`bilibili.com/video/av...`、`b23.tv/...`
-
-工作流：
-
-1. 导入本地文件，或粘贴 B 站链接。
-2. 预览视频或音频。
-3. 解析字幕：
-   - B 站视频优先使用原生字幕。
-   - 没有原生字幕时，界面会询问是否启用 WhisperX 自动转写。
-   - WhisperX 使用自动语言识别：中文就是中文，英文就是英文，不做翻译。
-4. 按字幕选择连续片段，也可以手动微调开始和结束时间。
-5. 给声音素材命名，例如 `小A的声音`。
-6. 选择清理模式：
-   - `轻量稳定 / light`：裁剪、单声道、重采样、响度规范、轻量降噪。
-   - `重度人声分离 / vocal_isolate`：先用 Demucs 分离人声，再规范化。
-7. 试听三段音频：
-   - 原始选段
-   - 处理后素材
-   - 固定试配音
-8. 满意后再套用到当前 Episode。
-
-生成的声音素材会保存到：
-
-```text
-voice_sourse/assets/<voice-name>/
-```
-
-B 站源文件缓存会保存到：
-
-```text
-voice_sourse/imported/bilibili/
-```
-
-B 站导入 v1 限制：
-
-- 只支持公开视频
-- 不支持登录 Cookie
-- 不支持会员 / 付费 / 受保护内容
-- 不支持直播
-- 不支持收藏夹、合集、批量导入
+系统会先按 `segment` 切分，再进一步拆成更小的 `chunk` 进入配音工作流。
 
 ## 导出格式
 
-导出结果同时包含按 shot 拆分的音频，以及整集拼接后的音频和字幕：
+导出结果会同时包含按 shot 拆分的音频，以及整集拼接后的音频和字幕：
 
 ```text
 episode.zip/
@@ -257,14 +284,18 @@ episode.zip/
   remotion-manifest.json
 ```
 
-`remotion-manifest.json` 会包含 shot 顺序、起止时间、帧数、音频文件名和字幕 cues，方便 Remotion 直接读取。
+其中：
+
+- `episode.wav` 为最终整集拼接结果
+- `durations.json` 包含时长与起止信息
+- `remotion-manifest.json` 包含 shot 顺序、起止时间、音频文件名和字幕 cues，便于 Remotion 直接消费
 
 前端也支持导出到本地目录。
 
 ## 常用地址
 
 | 服务 | 地址 |
-|---|---|
+| --- | --- |
 | Web | `http://localhost:3010` |
 | API | `http://localhost:8100` |
 | API 文档 | `http://localhost:8100/docs` |
@@ -297,49 +328,37 @@ curl http://127.0.0.1:8100/readyz
 ## 常见问题
 
 | 现象 | 建议检查 |
-|---|---|
-| Web 能打开，但 Episode 加载失败 | API 可能没启动。先打开 `http://127.0.0.1:8100/healthz`。 |
-| VoxCPM 合成报错 | 先检查 TTS 模式字段。`极致克隆` 需要准确的 `prompt_text`；长样本或噪声样本建议用 `可控克隆`。 |
-| WhisperX 自动字幕很慢 | 正常。长视频转写会花时间，所以界面会先询问再启动 WhisperX。 |
-| Docker 容器像是“不见了” | 当前 `stop-local-stack.bat` 使用 `stop`，容器应该保留为 `Exited`；如果没有，重新运行启动脚本即可。 |
-| B 站导入失败 | v1 只支持公开视频，不支持私密、付费、会员、登录后可见内容。 |
-
-## 第三方声明
-
-本仓库包含从 `Bili23 Downloader` 派生的最小 B 站导入逻辑。
-
-详见：
-
-- [third_party/bili23/NOTICE.md](third_party/bili23/NOTICE.md)
-
-由于集成了这部分来源，仓库按 GPL-3.0 兼容方式分发。
-
-## License
-
-GPL-3.0
+| --- | --- |
+| Web 能打开，但 Episode 加载失败 | 先检查 `http://127.0.0.1:8100/healthz` 是否可达 |
+| VoxCPM 合成报错 | 核对当前 TTS 模式是否和字段匹配，尤其是 `极致克隆` 的 `prompt_text` |
+| WhisperX 转写很慢 | 长音频是正常现象，界面会先确认再启动转写 |
+| B 站导入失败 | 当前仅支持公开视频，不支持私密、付费、会员、登录可见内容 |
+| 浏览器打不开新资源 | 可先强制刷新 `Ctrl + F5`，再检查前端服务是否已重启 |
 
 ## Desktop Portable Mode
 
-This repo now also includes a Docker-free desktop mode for Windows.
+仓库也包含了一个适合 Windows 的 Docker-free 桌面模式。
 
-What changes in desktop mode:
+桌面模式的核心变化：
 
-- database: local `SQLite`
-- object storage: local filesystem directory
-- orchestration: local in-process execution instead of requiring `Prefect Server`
-- still required locally:
-  - `VoxCPM2` model directory
-  - `WhisperX / Hugging Face` cache
-  - `voice_sourse` reference audio directory
+- 数据库改为本地 `SQLite`
+- 对象存储改为本地文件目录
+- 编排改为本地进程内执行，不依赖 `Prefect Server`
 
-Desktop mode entry points:
+本地仍然需要准备：
+
+- `VoxCPM2` 模型目录
+- `WhisperX / Hugging Face` 缓存目录
+- `voice_sourse` 参考音频目录
+
+桌面模式入口：
 
 - `start-desktop-stack.bat`
 - `start-desktop-stack-debug.bat`
 - `stop-desktop-stack.bat`
 - `desktop/launcher.py`
 
-Desktop runtime data is stored under:
+桌面运行数据默认放在：
 
 ```text
 .desktop-runtime/
@@ -348,13 +367,13 @@ Desktop runtime data is stored under:
   storage/
 ```
 
-Desktop settings are stored under:
+桌面配置默认放在：
 
 ```text
 .desktop/desktop.env
 ```
 
-Useful commands:
+常用命令：
 
 ```powershell
 python .\desktop\launcher.py
@@ -364,13 +383,13 @@ python .\desktop\launcher.py
 
 ### 桌面模式最少配置
 
-如果你想降低学习成本，最简单的做法是只准备 3 个路径：
+最少准备 3 个路径即可：
 
 1. `VOXCPM_MODEL_PATH`
 2. `HF_HOME`
 3. `HARNESS_VOICE_SOURCE_DIR`
 
-推荐目录长这样：
+推荐目录结构：
 
 ```text
 E:\VC\
@@ -387,36 +406,22 @@ E:\VC\
 - `HF_HOME = E:\VC\hf-cache`
 - `HARNESS_VOICE_SOURCE_DIR = E:\VC\voice_sourse`
 
-桌面模式配置文件模板在：
+配置模板：
 
-- `desktop/desktop.env.example`
+- 模板文件：`desktop/desktop.env.example`
+- 实际运行文件：`.desktop/desktop.env`
 
-真正运行时读取的是：
+两种最省事的启动方式：
 
-- `.desktop/desktop.env`
-
-最省事的方式有两种：
-
-1. 直接运行：
-
-```powershell
-python .\desktop\launcher.py
-```
-
-在界面里选择这 3 个目录，然后点击“保存配置”。
-
-2. 手动复制模板：
+1. 运行 `python .\desktop\launcher.py`，在界面里选择路径并保存。
+2. 复制模板后手动修改：
 
 ```powershell
 mkdir .desktop
 copy .\desktop\desktop.env.example .\.desktop\desktop.env
 ```
 
-然后把 `.desktop\desktop.env` 改成你自己的路径。
-
-### 桌面模式建议流程
-
-第一次使用桌面模式，建议按这个顺序来：
+建议首次使用按这个顺序：
 
 1. 准备好 `VoxCPM2` 模型目录
 2. 准备好 `WhisperX / HF` 缓存目录
@@ -426,9 +431,26 @@ copy .\desktop\desktop.env.example .\.desktop\desktop.env
 6. 点击“启动全部”
 7. 等待浏览器打开 `http://127.0.0.1:3010`
 
-如果你只是想直接运行脚本，也可以：
+## Git 仓库里不应该提交什么
 
-```powershell
-copy .\desktop\desktop.env.example .\.desktop\desktop.env
-.\start-desktop-stack.bat
-```
+这个仓库只保存源码、脚本、配置模板和文档，不应提交本地运行资产。
+
+请不要把这些内容推到 GitHub：
+
+- Python 虚拟环境，例如 `E:\VC\venv312`
+- Hugging Face / WhisperX 缓存，例如 `E:\VC\hf-cache`
+- VoxCPM2 模型文件，例如 `E:\VC\pretrained_models\VoxCPM2`
+- `voice_sourse` 下的本地参考音频
+- 日志、对象存储镜像、导出缓存、`node_modules`、前端构建产物
+
+## 第三方说明
+
+仓库内包含从 `Bili23 Downloader` 派生的最小 B 站导入逻辑。详细信息见：
+
+- [third_party/bili23/NOTICE.md](third_party/bili23/NOTICE.md)
+
+由于集成了这部分来源，仓库按 GPL-3.0 兼容方式分发。
+
+## License
+
+GPL-3.0

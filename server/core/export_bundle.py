@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import wave
@@ -18,25 +19,53 @@ from typing import Any, Sequence
 from server.core.models import Chunk
 from server.core.p6_logic import (
     ChunkTiming,
-    compute_chunk_offsets,
+    compute_timeline_layout,
     generate_silence,
     merge_srt_files,
     parse_srt,
+    run_ffmpeg_timeline_mix,
     sort_chunk_timings,
 )
 from server.core.repositories import TakeRepo
+from server.core.runtime_mode import repo_root
 from server.core.storage import (
+    LocalFSStorage,
     StorageBackend,
     chunk_subtitle_key,
     final_srt_key,
-    final_wav_key,
     storage_uri_to_key,
 )
 
 DEFAULT_EXPORT_FPS = 30
-PADDING_S = 0.2
-SHOT_GAP_S = 0.5
+PADDING_S = 0.0
+SHOT_GAP_S = 0.0
 EXPORT_BUNDLE_VERSION = 2
+
+
+def _localfs_storage_from_uri(uri: str) -> LocalFSStorage | None:
+    raw = (uri or "").strip()
+    if not raw.startswith("localfs://"):
+        return None
+    bucket_and_key = raw.split("://", 1)[1].split("?", 1)[0].strip("/")
+    bucket = bucket_and_key.split("/", 1)[0] or os.environ.get("MINIO_BUCKET", "tts-harness")
+    root = os.environ.get("HARNESS_LOCAL_STORAGE_DIR")
+    if root is None:
+        root = str((repo_root() / ".desktop-runtime" / "data" / "storage").resolve())
+    return LocalFSStorage(root_dir=Path(root), bucket=bucket)
+
+
+async def _download_bytes(
+    storage: StorageBackend,
+    key: str,
+    *,
+    fallback_storage: StorageBackend | None = None,
+) -> bytes:
+    try:
+        return await storage.download_bytes(key)
+    except Exception:
+        if fallback_storage is None:
+            raise
+        return await fallback_storage.download_bytes(key)
 
 
 @dataclass
@@ -128,6 +157,29 @@ async def _concat_wav_sequence(
         return output_path.read_bytes()
 
 
+async def _mix_wav_sequence(
+    wav_blobs: Sequence[bytes],
+    offsets: Sequence[float],
+    *,
+    output_name: str,
+) -> bytes:
+    if not wav_blobs:
+        raise ValueError("no wav blobs to mix")
+    if len(wav_blobs) != len(offsets):
+        raise ValueError("wav blob count does not match offsets")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        audio_paths: list[Path] = []
+        for index, wav_bytes in enumerate(wav_blobs):
+            chunk_wav = tmp_path / f"audio_{index:03d}.wav"
+            chunk_wav.write_bytes(wav_bytes)
+            audio_paths.append(chunk_wav)
+        output_path = tmp_path / output_name
+        await run_ffmpeg_timeline_mix(audio_paths, offsets, output_path)
+        return output_path.read_bytes()
+
+
 def compute_export_cache_key(
     *,
     episode_id: str,
@@ -158,6 +210,7 @@ def compute_export_cache_key(
             "status": chunk.status,
             "subtitleText": chunk.subtitle_text,
             "selectedTakeId": chunk.selected_take_id,
+            "nextGapMs": getattr(chunk, "next_gap_ms", None),
             "take": {
                 "id": take.id,
                 "audioUri": take.audio_uri,
@@ -206,55 +259,88 @@ async def build_export_bundle(
             shot_id=item["chunk"].shot_id,
             idx=item["chunk"].idx,
             duration_s=float(item["take"].duration_s or 0.0),
+            next_gap_ms=getattr(item["chunk"], "next_gap_ms", None),
         )
         for item in export_items
     ])
-    final_offsets = compute_chunk_offsets(chunk_timings, PADDING_S, SHOT_GAP_S)
+    final_layout = compute_timeline_layout(chunk_timings, PADDING_S, SHOT_GAP_S)
+    final_offsets = final_layout.offsets
     final_offset_by_chunk = {
         timing.chunk_id: offset
         for timing, offset in zip(chunk_timings, final_offsets)
     }
+    effective_gap_ms_by_chunk = {
+        timing.chunk_id: int(round(gap * 1000))
+        for timing, gap in zip(chunk_timings, final_layout.effective_gaps)
+    }
+    chunk_manifest_by_id: dict[str, dict[str, Any]] = {}
+    for timing, start_s in zip(chunk_timings, final_offsets):
+        chunk_obj = next(item["chunk"] for item in export_items if item["chunk"].id == timing.chunk_id)
+        chunk_manifest_by_id[timing.chunk_id] = {
+            "id": timing.chunk_id,
+            "shotId": timing.shot_id,
+            "idx": timing.idx,
+            "startS": round(start_s, 3),
+            "durationS": round(float(timing.duration_s), 3),
+            "nextGapMs": getattr(chunk_obj, "next_gap_ms", None),
+            "effectiveGapMs": effective_gap_ms_by_chunk.get(timing.chunk_id),
+        }
     raw_srt_by_chunk: dict[str, str] = {}
-    shot_audio_blobs: list[bytes] = []
+    audio_blobs_by_chunk: dict[str, bytes] = {}
     shot_gap_count = max(len(items_by_shot) - 1, 0)
-    timeline_cursor_s = 0.0
+    localfs_fallback: StorageBackend | None = None
+    for item in export_items:
+        localfs_fallback = _localfs_storage_from_uri(item["take"].audio_uri)
+        if localfs_fallback is not None:
+            break
 
-    for shot_index, (shot_id, items) in enumerate(items_by_shot.items()):
+    for _shot_index, (shot_id, items) in enumerate(items_by_shot.items()):
         timings = sort_chunk_timings([
             ChunkTiming(
                 chunk_id=item["chunk"].id,
                 shot_id=shot_id,
                 idx=item["chunk"].idx,
                 duration_s=float(item["take"].duration_s or 0.0),
+                next_gap_ms=getattr(item["chunk"], "next_gap_ms", None),
             )
             for item in items
         ])
-        offsets = compute_chunk_offsets(timings, PADDING_S, SHOT_GAP_S)
+        shot_layout = compute_timeline_layout(timings, PADDING_S, SHOT_GAP_S)
+        offsets = shot_layout.offsets
         chunk_wav_blobs: list[bytes] = []
         for item in items:
             take = item["take"]
             audio_key = storage_uri_to_key(take.audio_uri)
-            chunk_wav_blobs.append(await storage.download_bytes(audio_key))
-        shot_wav_bytes = await _concat_wav_sequence(
+            wav_bytes = await _download_bytes(
+                storage,
+                audio_key,
+                fallback_storage=_localfs_storage_from_uri(take.audio_uri),
+            )
+            chunk_wav_blobs.append(wav_bytes)
+            audio_blobs_by_chunk[item["chunk"].id] = wav_bytes
+        shot_wav_bytes = await _mix_wav_sequence(
             chunk_wav_blobs,
-            gap_s=PADDING_S,
+            offsets,
             output_name=f"{shot_id}.wav",
         )
 
         files[f"{shot_id}.wav"] = shot_wav_bytes
-        shot_audio_blobs.append(shot_wav_bytes)
 
         try:
             with io.BytesIO(shot_wav_bytes) as wav_buffer:
                 with wave.open(wav_buffer) as wav_file:
                     duration_s = wav_file.getnframes() / wav_file.getframerate()
         except Exception:
-            duration_s = sum(float(item["take"].duration_s or 0.0) for item in items)
+            duration_s = shot_layout.total_duration_s
 
         durations.append({
             "id": shot_id,
             "duration_s": round(duration_s, 3),
             "file": f"{shot_id}.wav",
+            "chunks": [
+                chunk_manifest_by_id[timing.chunk_id]
+                for timing in timings
+            ],
         })
 
         shot_subtitles: list[dict[str, Any]] = []
@@ -262,7 +348,11 @@ async def build_export_bundle(
         for timing, offset in zip(timings, offsets):
             sub_key = chunk_subtitle_key(episode_id, timing.chunk_id)
             try:
-                srt_bytes = await storage.download_bytes(sub_key)
+                srt_bytes = await _download_bytes(
+                    storage,
+                    sub_key,
+                    fallback_storage=localfs_fallback,
+                )
                 raw_srt = srt_bytes.decode("utf-8")
                 raw_srt_by_chunk[timing.chunk_id] = raw_srt
                 cues = parse_srt(raw_srt)
@@ -280,8 +370,12 @@ async def build_export_bundle(
         if shot_subtitles:
             subtitles_by_shot[shot_id] = shot_subtitles
 
-        start_s = round(timeline_cursor_s, 3)
-        end_s = round(timeline_cursor_s + duration_s, 3)
+        global_starts = [final_offset_by_chunk[timing.chunk_id] for timing in timings]
+        start_s = round(min(global_starts), 3)
+        end_s = round(max(
+            final_offset_by_chunk[timing.chunk_id] + float(timing.duration_s)
+            for timing in timings
+        ), 3)
         manifest_shots.append({
             "id": shot_id,
             "audioFile": f"{shot_id}.wav",
@@ -291,36 +385,41 @@ async def build_export_bundle(
             "startFrame": int(round(start_s * fps)),
             "endFrame": int(round(end_s * fps)),
             "chunkIds": [item["chunk"].id for item in items],
+            "chunks": [
+                chunk_manifest_by_id[timing.chunk_id]
+                for timing in timings
+            ],
             "subtitleCount": len(shot_subtitles),
             "subtitles": shot_subtitles,
         })
-        timeline_cursor_s += duration_s
-        if shot_index < len(items_by_shot) - 1:
-            timeline_cursor_s += SHOT_GAP_S
 
-    try:
-        final_wav_bytes = await storage.download_bytes(final_wav_key(episode_id))
-    except Exception:
-        final_wav_bytes = await _concat_wav_sequence(
-            shot_audio_blobs,
-            gap_s=SHOT_GAP_S,
-            output_name="episode.wav",
-        )
+    final_wav_bytes = await _mix_wav_sequence(
+        [audio_blobs_by_chunk[timing.chunk_id] for timing in chunk_timings],
+        final_offsets,
+        output_name="episode.wav",
+    )
     files["episode.wav"] = final_wav_bytes
 
-    try:
-        final_srt_bytes = await storage.download_bytes(final_srt_key(episode_id))
-    except Exception:
-        merged_srt_inputs: list[str] = []
-        merged_srt_offsets: list[float] = []
-        for timing in chunk_timings:
-            raw_srt = raw_srt_by_chunk.get(timing.chunk_id)
-            if raw_srt is None:
-                continue
-            merged_srt_inputs.append(raw_srt)
-            merged_srt_offsets.append(final_offset_by_chunk[timing.chunk_id])
-        final_srt_text = merge_srt_files(merged_srt_inputs, merged_srt_offsets) if merged_srt_inputs else ""
+    merged_srt_inputs: list[str] = []
+    merged_srt_offsets: list[float] = []
+    for timing in chunk_timings:
+        raw_srt = raw_srt_by_chunk.get(timing.chunk_id)
+        if raw_srt is None:
+            continue
+        merged_srt_inputs.append(raw_srt)
+        merged_srt_offsets.append(final_offset_by_chunk[timing.chunk_id])
+    if merged_srt_inputs:
+        final_srt_text = merge_srt_files(merged_srt_inputs, merged_srt_offsets)
         final_srt_bytes = final_srt_text.encode("utf-8")
+    else:
+        try:
+            final_srt_bytes = await _download_bytes(
+                storage,
+                final_srt_key(episode_id),
+                fallback_storage=localfs_fallback,
+            )
+        except Exception:
+            final_srt_bytes = b""
     files["episode.srt"] = final_srt_bytes
 
     manifest = {
@@ -336,10 +435,14 @@ async def build_export_bundle(
         "finalSubtitleFile": "episode.srt",
         "durationsFile": "durations.json",
         "subtitlesFile": "subtitles.json",
-        "totalDurationS": round(timeline_cursor_s, 3),
-        "totalFrames": int(ceil(timeline_cursor_s * fps)),
+        "totalDurationS": round(final_layout.total_duration_s, 3),
+        "totalFrames": int(ceil(final_layout.total_duration_s * fps)),
         "shotCount": len(manifest_shots),
         "shotGapCount": shot_gap_count,
+        "chunks": [
+            chunk_manifest_by_id[timing.chunk_id]
+            for timing in chunk_timings
+        ],
         "shots": manifest_shots,
     }
 

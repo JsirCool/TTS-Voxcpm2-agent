@@ -112,6 +112,7 @@ class Chunk(Base):
     subtitle_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     selected_take_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_gap_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     boundary_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     last_edited_at: Mapped[datetime | None] = mapped_column(
