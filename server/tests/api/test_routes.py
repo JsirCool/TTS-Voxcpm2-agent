@@ -261,6 +261,19 @@ class TestEpisodeCRUD:
         data = resp.json()
         assert len(data) == 3
 
+    async def test_list_episodes_counts_verified_chunks_as_done_for_completed_episode(self, seeded_client: AsyncClient):
+        global _maker
+        async with _maker() as session:
+            await EpisodeRepo(session).set_status("ep-test", "done")
+            await ChunkRepo(session).set_status("ep-test:shot01:0", "verified")
+            await ChunkRepo(session).set_status("ep-test:shot01:1", "verified")
+            await session.commit()
+
+        resp = await seeded_client.get("/episodes")
+        assert resp.status_code == 200
+        episodes = {item["id"]: item for item in resp.json()}
+        assert episodes["ep-test"]["doneCount"] == 2
+
     async def test_get_episode(self, seeded_client: AsyncClient):
         resp = await seeded_client.get("/episodes/ep-test")
         assert resp.status_code == 200
@@ -295,11 +308,44 @@ class TestEpisodeCRUD:
 
 
 class TestRunEpisode:
-    async def test_trigger_run(self, seeded_client: AsyncClient):
+    async def test_trigger_run(self, seeded_client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import episodes as episode_routes
+
+        monkeypatch.setattr(
+            episode_routes,
+            "ensure_voxcpm_service_ready",
+            AsyncMock(return_value=None),
+        )
+
         resp = await seeded_client.post("/episodes/ep-test/run")
         assert resp.status_code == 200
         data = resp.json()
         assert "flowRunId" in data
+
+    async def test_trigger_run_rejects_when_voxcpm_unavailable(
+        self,
+        seeded_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import episodes as episode_routes
+
+        monkeypatch.setattr(
+            episode_routes,
+            "ensure_voxcpm_service_ready",
+            AsyncMock(side_effect=episode_routes.VoxCPMUnavailableError("service unavailable")),
+        )
+
+        resp = await seeded_client.post("/episodes/ep-test/run")
+
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "voxcpm_unavailable"
+        assert "VoxCPM 服务未就绪" in resp.json()["detail"]
+
+        global _maker
+        async with _maker() as session:
+            episode = await EpisodeRepo(session).get("ep-test")
+            assert episode is not None
+            assert episode.status != "running"
 
     async def test_trigger_run_not_found(self, client: AsyncClient):
         resp = await client.post("/episodes/nope/run")
@@ -446,13 +492,42 @@ class TestChunkGap:
 
 
 class TestChunkRetry:
-    async def test_retry_chunk(self, seeded_client: AsyncClient):
+    async def test_retry_chunk(self, seeded_client: AsyncClient, monkeypatch: pytest.MonkeyPatch):
+        from server.api.routes import episodes as episode_routes
+
+        monkeypatch.setattr(
+            episode_routes,
+            "ensure_voxcpm_service_ready",
+            AsyncMock(return_value=None),
+        )
+
         resp = await seeded_client.post(
             "/episodes/ep-test/chunks/ep-test:shot01:0/retry",
             params={"from_stage": "p2"},
         )
         assert resp.status_code == 200
         assert "flowRunId" in resp.json()
+
+    async def test_retry_chunk_rejects_when_voxcpm_unavailable(
+        self,
+        seeded_client: AsyncClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from server.api.routes import episodes as episode_routes
+
+        monkeypatch.setattr(
+            episode_routes,
+            "ensure_voxcpm_service_ready",
+            AsyncMock(side_effect=episode_routes.VoxCPMUnavailableError("service unavailable")),
+        )
+
+        resp = await seeded_client.post(
+            "/episodes/ep-test/chunks/ep-test:shot01:0/retry",
+            params={"from_stage": "p2"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "voxcpm_unavailable"
 
     async def test_retry_chunk_not_found(self, client: AsyncClient):
         resp = await client.post(
@@ -469,6 +544,7 @@ class TestMediaRoutes:
         monkeypatch.setattr(media_routes, "ffprobe_status", lambda: MediaToolStatus(True, "ffprobe"))
         monkeypatch.setattr(media_routes, "demucs_status", lambda: MediaToolStatus(False, "missing demucs"))
         monkeypatch.setattr(media_routes, "_probe_whisperx", AsyncMock(return_value=(True, None)))
+        monkeypatch.setattr(media_routes, "_probe_voxcpm", AsyncMock(return_value=(True, None)))
         monkeypatch.setattr(media_routes, "bilibili_status", lambda: True)
 
         resp = await client.get("/media/capabilities")
@@ -478,10 +554,12 @@ class TestMediaRoutes:
         assert data["ffprobe"] is True
         assert data["demucs"] is False
         assert data["whisperx"] is True
+        assert data["voxcpm"] is True
         assert data["bilibiliEnabled"] is True
         assert data["bilibiliPublicOnly"] is True
         assert data["bilibiliLoginSupported"] is False
         assert data["demucsError"] == "missing demucs"
+        assert data["voxcpmError"] is None
         assert data["bilibiliImportDir"].endswith(r"voice_sourse\imported\bilibili")
 
     async def test_import_bilibili_media_success(self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch):

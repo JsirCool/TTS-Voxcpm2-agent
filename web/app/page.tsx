@@ -13,6 +13,7 @@ import {
   useEpisode,
   useEpisodeLogs,
   useEpisodes,
+  useLocalServiceStatus,
   exportEpisode as exportEpisodeToLocal,
 } from "@/lib/hooks";
 import { STAGE_SHORT_LABEL } from "@/lib/stage-labels";
@@ -32,6 +33,7 @@ import { EpisodeSidebar } from "@/components/EpisodeSidebar";
 import { EpisodeStageBar } from "@/components/EpisodeStageBar";
 import { HelpDialog } from "@/components/HelpDialog";
 import { LogViewer } from "@/components/LogViewer";
+import { LocalServiceStatus } from "@/components/LocalServiceStatus";
 import { NewEpisodeDialog } from "@/components/NewEpisodeDialog";
 import { ReviewWorkbench } from "@/components/ReviewWorkbench";
 import { ScriptPreviewDialog } from "@/components/ScriptPreviewDialog";
@@ -45,6 +47,12 @@ type PendingChunkStage = {
   startedAt: number;
 };
 
+type PendingEpisodeRun = {
+  episodeId: string;
+  mode: string;
+  startedAt: number;
+};
+
 export default function Page() {
   const store = useHarnessStore();
   const [mounted, setMounted] = useState(false);
@@ -52,6 +60,7 @@ export default function Page() {
   const [scriptPreviewOpen, setScriptPreviewOpen] = useState(false);
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [pendingChunkStages, setPendingChunkStages] = useState<Record<string, PendingChunkStage>>({});
+  const [pendingEpisodeRun, setPendingEpisodeRun] = useState<PendingEpisodeRun | null>(null);
   const [chunkFilterMode, setChunkFilterMode] = useState<ChunkFilterMode>("all");
   const pendingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -67,6 +76,7 @@ export default function Page() {
   const { data: episodes, error: episodesError, mutate: mutateList } = useEpisodes();
   const { data: episode, error: episodeError, mutate: mutateDetail } = useEpisode(selectedId);
   const { data: logLines, error: logsError } = useEpisodeLogs(selectedId);
+  const { data: serviceStatus } = useLocalServiceStatus();
 
   const running = episode?.status === "running";
   const runningStage = running
@@ -81,6 +91,16 @@ export default function Page() {
   const stagedChunkCount = Object.keys(store.edits).length;
   const lastRunId = typeof episode?.metadata?.lastRunId === "string" ? episode.metadata.lastRunId : null;
   const sidebarCollapsed = store.sidebarCollapsed;
+  const hasChunks = (episode?.chunks.length ?? 0) > 0;
+  const chunkSyncPending = Boolean(
+    episode
+    && !hasChunks
+    && pendingEpisodeRun
+    && pendingEpisodeRun.episodeId === episode.id
+    && pendingEpisodeRun.mode === "chunk_only",
+  );
+  const showChunkOnlyHint = Boolean(episode && !hasChunks && episode.status === "empty" && !chunkSyncPending);
+  const showChunkRetryHint = Boolean(episode && !hasChunks && episode.status === "failed" && !chunkSyncPending);
 
   const clearPendingStage = useCallback((cid: string, startedAt?: number) => {
     const timer = pendingTimersRef.current[cid];
@@ -119,6 +139,7 @@ export default function Page() {
       for (const timer of Object.values(pendingTimersRef.current)) clearTimeout(timer);
       pendingTimersRef.current = {};
       setPendingChunkStages({});
+      setPendingEpisodeRun(null);
       return;
     }
     setPendingChunkStages((current) => {
@@ -159,6 +180,17 @@ export default function Page() {
     });
   }, [episode]);
 
+  useEffect(() => {
+    if (!episode) return;
+    setPendingEpisodeRun((current) => {
+      if (!current) return current;
+      if (current.episodeId !== episode.id) return null;
+      if (episode.chunks.length > 0) return null;
+      if (current.mode === "chunk_only" && episode.status !== "empty") return null;
+      return current;
+    });
+  }, [episode]);
+
   useEffect(() => () => {
     for (const timer of Object.values(pendingTimersRef.current)) clearTimeout(timer);
   }, []);
@@ -186,10 +218,24 @@ export default function Page() {
 
   const [execRun, runPending] = useAction(
     useCallback(async (mode: string) => {
-      await store.runEpisode(mode);
-      await mutateDetail();
-      await mutateList();
-    }, [mutateDetail, mutateList, store]),
+      if (!selectedId) return;
+      const startedAt = Date.now();
+      setPendingEpisodeRun({ episodeId: selectedId, mode, startedAt });
+      try {
+        await store.runEpisode(mode);
+        await mutateDetail();
+        await mutateList();
+      } catch (error) {
+        setPendingEpisodeRun((current) => (
+          current
+          && current.episodeId === selectedId
+          && current.startedAt === startedAt
+            ? null
+            : current
+        ));
+        throw error;
+      }
+    }, [mutateDetail, mutateList, selectedId, store]),
     { errorPrefix: "运行失败" },
   );
 
@@ -472,6 +518,7 @@ export default function Page() {
           <span className="text-xs text-neutral-400 dark:text-neutral-500 ml-1">v2</span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <LocalServiceStatus status={serviceStatus} />
           <button
             type="button"
             onClick={() => setApiKeyOpen(true)}
@@ -520,6 +567,8 @@ export default function Page() {
             <>
               <EpisodeHeader
                 episode={episode}
+                hasChunks={hasChunks}
+                chunkSyncPending={chunkSyncPending}
                 running={running}
                 runPending={runPending}
                 onRun={execRun}
@@ -565,8 +614,42 @@ export default function Page() {
 
               <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-neutral-900">
                 {episode.chunks.length === 0 ? (
-                  <div className="px-6 py-12 text-center text-sm text-neutral-400 dark:text-neutral-500">
-                    还没有切出 chunk。先点击上方“切稿”开始第一步。
+                  <div className="px-6 py-12 text-center">
+                    {showChunkOnlyHint ? (
+                      <div className="text-sm text-neutral-400 dark:text-neutral-500">
+                        还没有切出 chunk。先点击上方“切稿”开始第一步。
+                      </div>
+                    ) : showChunkRetryHint ? (
+                      <div className="mx-auto max-w-xl rounded-2xl border border-red-200 bg-red-50/70 px-5 py-4 text-left text-sm text-red-900 dark:border-red-800 dark:bg-red-950/20 dark:text-red-100">
+                        <div className="font-medium">上一次切稿失败了，所以当前还没有任何 chunk。</div>
+                        <div className="mt-1 text-xs leading-6 text-red-800/90 dark:text-red-200/90">
+                          这时应该允许重新切稿，而不是继续提示等待同步。你可以直接点上方“重新切稿”；如果仍然失败，再看下方日志里的具体报错。
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mx-auto max-w-xl rounded-2xl border border-amber-200 bg-amber-50/70 px-5 py-4 text-left text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-100">
+                        <div className="font-medium">
+                          {chunkSyncPending ? "切稿请求已经发出，正在等待 chunk 列表返回" : "当前状态和 chunk 列表暂时还没同步完成"}
+                        </div>
+                        <div className="mt-1 text-xs leading-6 text-amber-800/90 dark:text-amber-200/90">
+                          {chunkSyncPending
+                            ? "这时不需要再点一次“切稿”。通常几秒内会出现；如果长时间没有返回，请刷新列表或查看下方日志。"
+                            : "现在不适合继续提示“先切稿”。请先刷新列表；如果仍然没有 chunk，再根据日志判断是否需要重试。"}
+                        </div>
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void mutateDetail();
+                              void mutateList();
+                            }}
+                            className="rounded border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-100 dark:hover:bg-amber-900/40"
+                          >
+                            刷新列表
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>

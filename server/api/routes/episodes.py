@@ -64,11 +64,16 @@ from server.core.tts_presets import (
     normalize_tts_config,
     validate_tts_config,
 )
+from server.core.voxcpm_client import VoxCPMUnavailableError, ensure_voxcpm_service_ready
 
 router = APIRouter(tags=["episodes"])
 CHUNK_CONTROL_PROMPT_OVERRIDE_KEY = "tts_control_prompt_override"
 CHUNK_GAP_MIN_MS = -1000
 CHUNK_GAP_MAX_MS = 2000
+
+
+def _voxcpm_url() -> str:
+    return os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
 
 
 def _storage_bucket(storage: StorageBackend) -> str:
@@ -323,6 +328,59 @@ def _preview_audio_response(data: bytes) -> StreamingResponse:
     )
 
 
+async def _episode_run_requires_voxcpm(
+    session: AsyncSession,
+    *,
+    episode_id: str,
+    mode: str,
+    chunk_ids: list[str] | None,
+) -> bool:
+    if mode == "chunk_only":
+        return False
+    if mode == "regenerate":
+        return True
+
+    chunk_repo = ChunkRepo(session)
+    chunks = await chunk_repo.list_by_episode(episode_id)
+    if not chunks:
+        return True
+
+    target = chunks
+    if chunk_ids:
+        target_id_set = set(chunk_ids)
+        target = [chunk for chunk in target if chunk.id in target_id_set]
+
+    if mode == "retry_failed":
+        return any(chunk.status in ("failed", "needs_review") for chunk in target)
+
+    return any(chunk.selected_take_id is None for chunk in target)
+
+
+async def _ensure_voxcpm_ready_for_run(
+    session: AsyncSession,
+    *,
+    episode_id: str,
+    mode: str,
+    chunk_ids: list[str] | None,
+    action_label: str,
+) -> None:
+    if not await _episode_run_requires_voxcpm(
+        session,
+        episode_id=episode_id,
+        mode=mode,
+        chunk_ids=chunk_ids,
+    ):
+        return
+
+    try:
+        await ensure_voxcpm_service_ready(url=_voxcpm_url())
+    except VoxCPMUnavailableError as exc:
+        raise DomainError(
+            "voxcpm_unavailable",
+            f"VoxCPM 服务未就绪，已阻止本次{action_label}启动：{exc}",
+        ) from exc
+
+
 async def _mirror_script_to_desktop_localfs(
     storage: StorageBackend,
     key: str,
@@ -467,7 +525,9 @@ async def list_episodes(
     result: list[EpisodeSummary] = []
     for ep in episodes:
         chunks = await chunk_repo.list_by_episode(ep.id)
-        done_count = sum(1 for c in chunks if c.status == "done")
+        done_count = len(chunks) if ep.status == "done" else sum(
+            1 for c in chunks if c.status in ("done", "verified")
+        )
         failed_count = sum(1 for c in chunks if c.status == "failed")
         result.append(
             EpisodeSummary(
@@ -773,6 +833,14 @@ async def run_episode(
     if ep.status == "running":
         raise DomainError("invalid_state", "episode is already running")
 
+    await _ensure_voxcpm_ready_for_run(
+        session,
+        episode_id=episode_id,
+        mode=mode,
+        chunk_ids=chunk_ids,
+        action_label="配音",
+    )
+
     # Try Prefect deployment first; fall back to in-process execution (dev mode)
     import asyncio
     import uuid
@@ -914,6 +982,8 @@ async def run_episode(
                     for attempt in range(1, retries + 1):
                         try:
                             return await fn(*args, **kwargs)
+                        except VoxCPMUnavailableError:
+                            raise
                         except Exception as e:
                             last = e
                             if attempt < retries:
@@ -969,6 +1039,28 @@ async def run_episode(
                             "request": {"text": _text[:100], **(p2_params if isinstance(p2_params, dict) else {})},
                             "response": {"takeId": p2_result.take_id, "audioUri": p2_result.audio_uri, "durationS": p2_result.duration_s},
                         })
+                    except VoxCPMUnavailableError as e:
+                        err_msg = _fmt_err(e)
+                        _log.error("P2 blocked %s: %s", cid, err_msg)
+                        await _mark_stage(cid, "p2", "failed", error=err_msg, started=t0, context={
+                            "request": {"text": _text[:100], **(p2_params if isinstance(p2_params, dict) else {})},
+                        })
+                        from server.core.repositories import EventRepo
+
+                        async with _session_factory() as _s:
+                            await EpisodeRepo(_s).set_status(episode_id, "ready")
+                            await EventRepo(_s).write(
+                                episode_id=episode_id,
+                                chunk_id=None,
+                                kind="episode_blocked",
+                                payload={
+                                    "service": "voxcpm",
+                                    "mode": mode,
+                                    "reason": err_msg,
+                                },
+                            )
+                            await _s.commit()
+                        return
                     except Exception as e:
                         err_msg = _fmt_err(e)
                         _log.error("P2 failed %s: %s", cid, err_msg)
@@ -1416,6 +1508,15 @@ async def retry_chunk(
     chunk = await chunk_repo.get(chunk_id)
     if chunk is None or chunk.episode_id != episode_id:
         raise DomainError("not_found", f"chunk '{chunk_id}' not found in episode '{episode_id}'")
+
+    if from_stage == "p2":
+        try:
+            await ensure_voxcpm_service_ready(url=_voxcpm_url())
+        except VoxCPMUnavailableError as exc:
+            raise DomainError(
+                "voxcpm_unavailable",
+                f"VoxCPM 服务未就绪，已阻止本次重试启动：{exc}",
+            ) from exc
 
     import asyncio, uuid
     use_prefect = os.environ.get("TTS_USE_PREFECT", "").lower() in ("1", "true", "yes")

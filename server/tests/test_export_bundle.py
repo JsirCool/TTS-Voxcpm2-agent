@@ -139,17 +139,17 @@ async def test_build_export_bundle_includes_final_episode_assets(
     assert bundle.manifest["finalAudioFile"] == "episode.wav"
     assert bundle.manifest["finalSubtitleFile"] == "episode.srt"
     assert bundle.manifest["shotCount"] == 2
-    assert bundle.manifest["shots"][1]["startS"] == pytest.approx(0.4, abs=0.01)
-    assert bundle.manifest["totalDurationS"] == pytest.approx(1.0, abs=0.05)
+    assert bundle.manifest["shots"][1]["startS"] == pytest.approx(0.53, abs=0.01)
+    assert bundle.manifest["totalDurationS"] == pytest.approx(1.13, abs=0.05)
 
     with io.BytesIO(bundle.files["episode.wav"]) as wav_buffer:
         with wave.open(wav_buffer) as wav_file:
             duration_s = wav_file.getnframes() / wav_file.getframerate()
-    assert duration_s == pytest.approx(1.0, abs=0.05)
+    assert duration_s == pytest.approx(1.13, abs=0.05)
 
     episode_srt = bundle.files["episode.srt"].decode("utf-8").replace("\r\n", "\n")
     assert "1\n00:00:00,000 --> 00:00:00,300\nAlpha" in episode_srt
-    assert "2\n00:00:00,400 --> 00:00:00,700\nBeta" in episode_srt
+    assert "2\n00:00:00,530 --> 00:00:00,830\nBeta" in episode_srt
 
 
 @ffmpeg_required

@@ -99,6 +99,7 @@ class MediaCapabilitiesResponse(_CamelBase):
     ffprobe: bool
     demucs: bool
     whisperx: bool
+    voxcpm: bool
     bilibili_enabled: bool
     bilibili_public_only: bool
     bilibili_login_supported: bool
@@ -109,6 +110,7 @@ class MediaCapabilitiesResponse(_CamelBase):
     ffprobe_error: str | None = None
     demucs_error: str | None = None
     whisperx_error: str | None = None
+    voxcpm_error: str | None = None
     voice_source_dir: str
     bilibili_import_dir: str
 
@@ -500,7 +502,7 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
     ffprobe = ffprobe_status()
     demucs = demucs_status()
     whisperx_ok, whisperx_error = await _probe_whisperx(DEFAULT_WHISPERX_URL)
-    voxcpm_ok, _voxcpm_error = await _probe_voxcpm(DEFAULT_VOXCPM_URL)
+    voxcpm_ok, voxcpm_error = await _probe_voxcpm(DEFAULT_VOXCPM_URL)
     bilibili_enabled = bilibili_status()
 
     return MediaCapabilitiesResponse(
@@ -508,6 +510,7 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
         ffprobe=ffprobe.available,
         demucs=demucs.available,
         whisperx=whisperx_ok,
+        voxcpm=voxcpm_ok,
         bilibili_enabled=bilibili_enabled,
         bilibili_public_only=True,
         bilibili_login_supported=False,
@@ -518,6 +521,7 @@ async def get_media_capabilities() -> MediaCapabilitiesResponse:
         ffprobe_error=None if ffprobe.available else ffprobe.detail,
         demucs_error=None if demucs.available else demucs.detail,
         whisperx_error=whisperx_error,
+        voxcpm_error=voxcpm_error,
         voice_source_dir=str(voice_source_root()),
         bilibili_import_dir=str(_bilibili_import_root()),
     )

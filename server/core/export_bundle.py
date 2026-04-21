@@ -37,8 +37,8 @@ from server.core.storage import (
 )
 
 DEFAULT_EXPORT_FPS = 30
-PADDING_S = 0.0
-SHOT_GAP_S = 0.0
+PADDING_S = 0.13
+SHOT_GAP_S = 0.13
 EXPORT_BUNDLE_VERSION = 2
 
 

@@ -29,8 +29,33 @@ from server.flows.tasks.p3_transcribe import p3_transcribe  # kept for backward 
 from server.flows.tasks.p5_subtitles import p5_subtitles
 from server.flows.tasks.p6_concat import p6_concat
 from server.flows.tasks.p6v_check import p6v_check
+from server.core.voxcpm_client import VoxCPMUnavailableError, ensure_voxcpm_service_ready
 
 log = logging.getLogger(__name__)
+
+
+async def _mark_episode_blocked(
+    session_factory: Any,
+    episode_id: str,
+    *,
+    reason: str,
+    mode: str,
+) -> None:
+    from server.core.repositories import EpisodeRepo, EventRepo
+
+    async with session_factory() as session:
+        await EpisodeRepo(session).set_status(episode_id, "ready")
+        await EventRepo(session).write(
+            episode_id=episode_id,
+            chunk_id=None,
+            kind="episode_blocked",
+            payload={
+                "service": "voxcpm",
+                "mode": mode,
+                "reason": reason,
+            },
+        )
+        await session.commit()
 
 
 @flow(name="run-episode")
@@ -40,8 +65,8 @@ async def run_episode_flow(
     mode: str = "synthesize",
     chunk_ids: list[str] | None = None,
     language: str = "zh",
-    padding_ms: int = 0,
-    shot_gap_ms: int = 0,
+    padding_ms: int = 130,
+    shot_gap_ms: int = 130,
 ) -> dict[str, Any]:
     """Orchestrate the TTS pipeline for one episode.
 
@@ -128,6 +153,9 @@ async def _synth_one_chunk(
     # P2: synthesize
     try:
         await run_p2_synth(chunk_id, params=base_params)
+    except VoxCPMUnavailableError:
+        log.warning("P2 synth blocked for chunk %s because VoxCPM is unavailable", chunk_id)
+        raise
     except Exception:
         log.exception("P2 synth failed for chunk %s", chunk_id)
         await _set_chunk_status(chunk_id, "needs_review")
@@ -190,6 +218,16 @@ async def _run_synthesize(
         ep = await ep_repo.get(episode_id)
         ep_config = (ep.config if ep else None) or {}
 
+    if not all_chunks:
+        log.info("No chunks found for %s; auto-running P1 before synthesize", episode_id)
+        await _run_chunk_only(episode_id)
+        async with _session_factory() as session:  # type: ignore[misc]
+            chunk_repo = ChunkRepo(session)
+            ep_repo = EpisodeRepo(session)
+            all_chunks = await chunk_repo.list_by_episode(episode_id)
+            ep = await ep_repo.get(episode_id)
+            ep_config = (ep.config if ep else None) or {}
+
     tts_config = {k: v for k, v in ep_config.items() if k != "repair"}
 
     # Filter to requested chunk_ids if provided
@@ -209,6 +247,26 @@ async def _run_synthesize(
     # P1c: input validation gate (only for chunks going through P2)
     need_p2_ids = [c.id for c in need_p2]
     if need_p2_ids:
+        try:
+            await ensure_voxcpm_service_ready()
+        except VoxCPMUnavailableError as exc:
+            log.warning("Blocking synthesize for %s because VoxCPM is unavailable: %s", episode_id, exc)
+            await _mark_episode_blocked(
+                _session_factory,
+                episode_id,
+                reason=str(exc),
+                mode="synthesize",
+            )
+            return {
+                "mode": "synthesize",
+                "blocked": "voxcpm_unavailable",
+                "detail": str(exc),
+                "synthesized": 0,
+                "skipped_p2": len(skip_p2),
+                "verified": 0,
+                "needs_review": 0,
+                "total": len(all_ids),
+            }
         p1c_futures = p1c_check.map(need_p2_ids)
         [await f.result() for f in p1c_futures]
         log.info("P1c complete: %d chunks validated", len(need_p2_ids))
@@ -225,7 +283,38 @@ async def _run_synthesize(
             )
             for cid in need_p2_ids
         ]
-        loop_results = await asyncio.gather(*loop_tasks)
+        loop_results_raw = await asyncio.gather(*loop_tasks, return_exceptions=True)
+        voxcpm_error = next(
+            (item for item in loop_results_raw if isinstance(item, VoxCPMUnavailableError)),
+            None,
+        )
+        if voxcpm_error is not None:
+            log.warning(
+                "Blocking synthesize for %s because VoxCPM became unavailable mid-run: %s",
+                episode_id,
+                voxcpm_error,
+            )
+            await _mark_episode_blocked(
+                _session_factory,
+                episode_id,
+                reason=str(voxcpm_error),
+                mode="synthesize",
+            )
+            async with _session_factory() as session:
+                chunk_repo = ChunkRepo(session)
+                refreshed = await chunk_repo.list_by_episode(episode_id)
+            refreshed_id_set = set(all_ids)
+            return {
+                "mode": "synthesize",
+                "blocked": "voxcpm_unavailable",
+                "detail": str(voxcpm_error),
+                "synthesized": len(need_p2_ids),
+                "skipped_p2": len(skip_p2),
+                "verified": sum(1 for c in refreshed if c.id in refreshed_id_set and c.status == "verified"),
+                "needs_review": sum(1 for c in refreshed if c.id in refreshed_id_set and c.status == "needs_review"),
+                "total": len(all_ids),
+            }
+        loop_results = [item for item in loop_results_raw if isinstance(item, dict)]
         verified_count = sum(1 for r in loop_results if r["verdict"] == "pass")
         needs_review_count = sum(1 for r in loop_results if r["verdict"] == "needs_review")
         log.info(
@@ -347,6 +436,25 @@ async def _run_retry_failed(
     retry_ids = [c.id for c in retry_targets]
     log.info("Retrying %d failed/needs_review chunks", len(retry_ids))
 
+    try:
+        await ensure_voxcpm_service_ready()
+    except VoxCPMUnavailableError as exc:
+        log.warning("Blocking retry_failed for %s because VoxCPM is unavailable: %s", episode_id, exc)
+        await _mark_episode_blocked(
+            _session_factory,
+            episode_id,
+            reason=str(exc),
+            mode="retry_failed",
+        )
+        return {
+            "mode": "retry_failed",
+            "blocked": "voxcpm_unavailable",
+            "detail": str(exc),
+            "retried": 0,
+            "verified": 0,
+            "needs_review": len(retry_ids),
+        }
+
     # P1c: input validation for retry chunks
     p1c_futures = p1c_check.map(retry_ids)
     [await f.result() for f in p1c_futures]
@@ -361,7 +469,34 @@ async def _run_retry_failed(
         )
         for cid in retry_ids
     ]
-    await asyncio.gather(*loop_tasks)
+    loop_results = await asyncio.gather(*loop_tasks, return_exceptions=True)
+    voxcpm_error = next(
+        (item for item in loop_results if isinstance(item, VoxCPMUnavailableError)),
+        None,
+    )
+    if voxcpm_error is not None:
+        log.warning(
+            "Blocking retry_failed for %s because VoxCPM became unavailable mid-run: %s",
+            episode_id,
+            voxcpm_error,
+        )
+        await _mark_episode_blocked(
+            _session_factory,
+            episode_id,
+            reason=str(voxcpm_error),
+            mode="retry_failed",
+        )
+        async with _session_factory() as session:
+            chunk_repo = ChunkRepo(session)
+            refreshed = await chunk_repo.list_by_episode(episode_id)
+        return {
+            "mode": "retry_failed",
+            "blocked": "voxcpm_unavailable",
+            "detail": str(voxcpm_error),
+            "retried": len(retry_ids),
+            "verified": sum(1 for c in refreshed if c.status == "verified"),
+            "needs_review": sum(1 for c in refreshed if c.status == "needs_review"),
+        }
 
     # P5 for verified chunks.
     async with _session_factory() as session:

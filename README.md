@@ -29,11 +29,13 @@
 
 ## 界面截图
 
-### 1. 主工作台
+### 1. 主工作台与服务状态
 
-展示 episode、TTS 配置、阶段状态和 chunk 列表，适合日常配音返工与复核。
+展示 episode、TTS 配置、阶段状态、chunk 列表，以及 Harness API / VoxCPM / WhisperX 的本地服务可用状态。
 
 ![主工作台](docs/screenshots/workbench-overview.png)
+
+![本地服务状态](docs/screenshots/service-status-header.png)
 
 ### 2. Chunk 空隙编辑
 
@@ -41,11 +43,23 @@
 
 ![Chunk 空隙编辑](docs/screenshots/chunk-gap-editor.png)
 
-### 3. 素材处理与波形切段
+### 3. 整体拼接预览
+
+打开 chunk 空隙后，底部可以临时预览整集拼接效果，不写入数据库，方便快速听整体节奏。
+
+![整体拼接预览](docs/screenshots/chunk-gap-overall-preview.png)
+
+### 4. 素材处理与波形切段
 
 支持导入本地音视频或 B 站素材，在第二步里用波形切点、缩放和平移来精修选段。
 
 ![素材处理与波形切段](docs/screenshots/media-waveform-editor.png)
+
+### 5. 选段预览与处理试听
+
+切好开始和结束点后，可以先生成临时选段预览，确认没有截断句子，再继续做降噪、分离或克隆配置。
+
+![选段预览与处理试听](docs/screenshots/media-selection-preview.png)
 
 ## 系统架构
 
@@ -223,7 +237,7 @@ E:\VC\voice_sourse
 Chunk 列表支持打开“chunk 空隙”面板。每个 chunk 都可以控制它与下一个 chunk 的间隙：
 
 - 字段名：`nextGapMs`
-- 默认值：`0ms`
+- 默认值：`130ms`
 - 正值：插入静音
 - 负值：让下一段提前进入，与当前段尾部重叠
 

@@ -49,6 +49,27 @@ interface HookResult<T> {
   mutate: () => Promise<unknown>;
 }
 
+export type LocalServiceStatusSnapshot = {
+  harnessApi: boolean;
+  voxcpm: boolean | null;
+  whisperx: boolean | null;
+  updatedAt: number;
+  errors: {
+    harnessApi?: string | null;
+    voxcpm?: string | null;
+    whisperx?: string | null;
+    capabilities?: string | null;
+  };
+};
+
+type MediaCapabilitiesPayload = {
+  whisperx?: boolean;
+  whisperxError?: string | null;
+  voxcpm?: boolean;
+  voxcpmError?: string | null;
+  trialSynthesis?: boolean;
+};
+
 export function useEpisodes(): HookResult<EpisodeSummary[]> {
   const swr = useSWR<EpisodeSummary[]>("api:episodes", async () => {
     const { data, error } = await api.GET("/episodes");
@@ -95,6 +116,83 @@ export function useEpisode(id: string | null): HookResult<Episode> {
     return () => conn.close();
   }, [id, mutate]);
 
+  return {
+    data: swr.data,
+    error: (swr.error as Error) ?? null,
+    isLoading: swr.isLoading,
+    mutate: swr.mutate,
+  };
+}
+
+export function useLocalServiceStatus(): HookResult<LocalServiceStatusSnapshot> {
+  const swr = useSWR<LocalServiceStatusSnapshot>(
+    "api:local-service-status",
+    async () => {
+      const baseUrl = getApiUrl();
+      const errors: LocalServiceStatusSnapshot["errors"] = {};
+      let harnessApi = false;
+
+      try {
+        const health = await fetch(`${baseUrl}/healthz`, {
+          cache: "no-store",
+          credentials: "include",
+          headers: authHeaders(),
+        });
+        harnessApi = health.ok;
+        if (!health.ok) errors.harnessApi = `HTTP ${health.status}`;
+      } catch (error) {
+        errors.harnessApi = error instanceof Error ? error.message : String(error);
+      }
+
+      if (!harnessApi) {
+        return {
+          harnessApi: false,
+          voxcpm: false,
+          whisperx: false,
+          updatedAt: Date.now(),
+          errors,
+        };
+      }
+
+      let voxcpm: boolean | null = null;
+      let whisperx: boolean | null = null;
+      try {
+        const response = await fetch(`${baseUrl}/media/capabilities`, {
+          cache: "no-store",
+          credentials: "include",
+          headers: authHeaders(),
+        });
+        if (!response.ok) {
+          errors.capabilities = `HTTP ${response.status}`;
+          voxcpm = false;
+          whisperx = false;
+        } else {
+          const payload = await response.json() as MediaCapabilitiesPayload;
+          voxcpm = Boolean(payload.voxcpm ?? payload.trialSynthesis);
+          whisperx = Boolean(payload.whisperx);
+          errors.voxcpm = payload.voxcpmError ?? null;
+          errors.whisperx = payload.whisperxError ?? null;
+        }
+      } catch (error) {
+        errors.capabilities = error instanceof Error ? error.message : String(error);
+        voxcpm = false;
+        whisperx = false;
+      }
+
+      return {
+        harnessApi,
+        voxcpm,
+        whisperx,
+        updatedAt: Date.now(),
+        errors,
+      };
+    },
+    {
+      refreshInterval: 5000,
+      revalidateOnFocus: true,
+      shouldRetryOnError: false,
+    },
+  );
   return {
     data: swr.data,
     error: (swr.error as Error) ?? null,

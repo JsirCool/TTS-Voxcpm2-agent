@@ -109,6 +109,90 @@ def storage_uri_to_key(uri: str) -> str:
     return "/".join(parts[1:])
 
 
+def storage_bucket_name(storage: StorageBackend) -> str:
+    bucket = getattr(storage, "bucket", None)
+    if isinstance(bucket, str) and bucket:
+        return bucket
+    return os.environ.get("MINIO_BUCKET", "tts-harness")
+
+
+def storage_mirror_roots() -> list[Path]:
+    roots: list[Path] = []
+    raw = os.environ.get("HARNESS_STORAGE_MIRROR_DIR")
+    if raw:
+        roots.append(Path(raw).expanduser())
+    roots.append((Path(__file__).resolve().parents[2] / "storage-mirror").resolve())
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        resolved = root.resolve()
+        marker = str(resolved).lower()
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(resolved)
+    return unique
+
+
+def storage_mirror_paths(bucket: str, key: str) -> list[Path]:
+    parts = _storage_key_parts(key)
+    if not parts:
+        return []
+
+    variants = [
+        parts,
+        [quote(part, safe="-_().%") for part in parts],
+        [_encode_filesystem_part(part) for part in parts],
+    ]
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for root in storage_mirror_roots():
+        bucket_root = (root / bucket).resolve()
+        for variant in variants:
+            path = bucket_root
+            for part in variant:
+                path = path / part
+            resolved = path.resolve()
+            marker = str(resolved).lower()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            try:
+                resolved.relative_to(bucket_root)
+            except ValueError:
+                continue
+            candidates.append(resolved)
+    return candidates
+
+
+async def read_storage_mirror_bytes(bucket: str, key: str) -> bytes | None:
+    for path in storage_mirror_paths(bucket, key):
+        if path.is_file():
+            return await asyncio.to_thread(path.read_bytes)
+    return None
+
+
+async def download_bytes_with_fallback(storage: StorageBackend, key: str) -> bytes:
+    try:
+        return await storage.download_bytes(key)
+    except Exception as primary_exc:
+        if not isinstance(storage, LocalFSStorage):
+            root = os.environ.get("HARNESS_LOCAL_STORAGE_DIR")
+            if root:
+                try:
+                    localfs = LocalFSStorage(root_dir=Path(root), bucket=storage_bucket_name(storage))
+                    return await localfs.download_bytes(key)
+                except Exception:
+                    pass
+
+        mirrored = await read_storage_mirror_bytes(storage_bucket_name(storage), key)
+        if mirrored is not None:
+            return mirrored
+
+        raise primary_exc
+
+
 @runtime_checkable
 class StorageBackend(Protocol):
     @property
@@ -575,6 +659,11 @@ __all__ = [
     "LocalFSSettings",
     "LocalFSStorage",
     "build_storage_from_env",
+    "storage_bucket_name",
+    "storage_mirror_roots",
+    "storage_mirror_paths",
+    "read_storage_mirror_bytes",
+    "download_bytes_with_fallback",
     "storage_uri_to_key",
     "episode_script_key",
     "chunk_take_key",

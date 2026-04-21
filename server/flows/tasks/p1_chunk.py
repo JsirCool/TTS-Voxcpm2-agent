@@ -44,7 +44,7 @@ from server.core.models import Chunk
 from server.core.p1_logic import script_to_chunks
 from server.core.domain import DomainError
 from server.core.repositories import ChunkRepo, EpisodeRepo
-from server.core.storage import StorageBackend, episode_script_key
+from server.core.storage import StorageBackend, download_bytes_with_fallback, episode_script_key
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class P1Context:
 async def _load_script(storage: StorageBackend, episode_id: str) -> dict[str, Any]:
     key = episode_script_key(episode_id)
     try:
-        raw = await storage.download_bytes(key)
+        raw = await download_bytes_with_fallback(storage, key)
     except Exception as exc:  # noqa: BLE001 — we re-raise as DomainError
         raise DomainError("not_found", f"script not found: {key}") from exc
 

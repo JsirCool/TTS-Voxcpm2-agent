@@ -14,6 +14,7 @@ They verify the wiring that the pure-logic tests cannot:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import AsyncIterator
 
 import pytest
@@ -56,6 +57,10 @@ class InMemoryStorage:
             return self._objects[key]
         except KeyError as exc:
             raise FileNotFoundError(key) from exc
+
+    @property
+    def bucket(self) -> str:
+        return "tts-harness"
 
 
 @pytest_asyncio.fixture()
@@ -187,11 +192,37 @@ async def test_missing_script_raises_not_found(engine_and_maker) -> None:
         await _run_p1(ctx, ep_id)
     assert exc_info.value.code == "not_found"
 
-    # Nothing was written to chunks/events because the failure happened
-    # before the DB transaction opened.
+    # No chunks are written, but the adapter emits a best-effort stage_failed
+    # event so the workbench can explain why P1 stopped.
     async with maker() as s:
         assert (await s.execute(select(Chunk))).scalars().all() == []
-        assert (await s.execute(select(Event))).scalars().all() == []
+        events = (await s.execute(select(Event))).scalars().all()
+        assert [event.kind for event in events] == ["stage_failed"]
+        assert events[0].payload["stage"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_script_load_falls_back_to_storage_mirror(
+    engine_and_maker,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, maker = engine_and_maker
+    storage = InMemoryStorage()
+    ep_id = "测试镜像"
+    key = episode_script_key(ep_id)
+    mirror_script = tmp_path / "mirror" / "tts-harness" / "episodes" / ep_id / "script.json"
+    mirror_script.parent.mkdir(parents=True, exist_ok=True)
+    mirror_script.write_bytes(json.dumps(SAMPLE_SCRIPT).encode("utf-8"))
+    monkeypatch.setenv("HARNESS_STORAGE_MIRROR_DIR", str(tmp_path / "mirror"))
+
+    await _seed_episode(maker, ep_id)
+
+    ctx = P1Context(session_maker=maker, storage=storage)  # type: ignore[arg-type]
+    result = await _run_p1(ctx, ep_id)
+
+    assert result.episode_id == ep_id
+    assert len(result.chunks) == 3
 
 
 @pytest.mark.asyncio

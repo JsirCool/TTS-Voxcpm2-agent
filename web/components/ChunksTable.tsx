@@ -359,7 +359,7 @@ const RowGroup = memo(function RowGroup({
 function defaultGapMs(chunk: Chunk, nextChunk: Chunk): number {
   void chunk;
   void nextChunk;
-  return 0;
+  return 130;
 }
 
 function clampGapMs(value: number): number {

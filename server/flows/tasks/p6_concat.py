@@ -134,8 +134,8 @@ def _get_storage() -> StorageBackend:
 async def run_p6_concat(
     episode_id: str,
     *,
-    padding_ms: int = 0,
-    shot_gap_ms: int = 0,
+    padding_ms: int = 130,
+    shot_gap_ms: int = 130,
     session: AsyncSession,
     storage: StorageBackend,
     workdir: Path | None = None,
@@ -348,8 +348,8 @@ async def run_p6_concat(
 @task(name="p6-concat", retries=2)
 async def p6_concat(
     episode_id: str,
-    padding_ms: int = 200,
-    shot_gap_ms: int = 200,
+    padding_ms: int = 130,
+    shot_gap_ms: int = 130,
 ) -> P6Result:
     """Prefect entry point. Owns DB session + MinIO client lifecycle."""
     storage = _get_storage()

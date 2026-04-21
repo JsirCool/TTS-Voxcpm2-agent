@@ -23,6 +23,7 @@ from .tts_presets import (
 
 DEFAULT_VOXCPM_URL = os.environ.get("VOXCPM_URL", "http://127.0.0.1:8877")
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
+PROBE_TIMEOUT = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
 
 
 class VoxCPMError(Exception):
@@ -114,6 +115,52 @@ class VoxCPMClient:
             ) from exc
 
         return self._handle_response(response)
+
+    async def probe_ready(self) -> tuple[bool, str | None]:
+        """Return whether the local service is reachable and ready for synthesis."""
+
+        last_detail: str | None = None
+        async with self._client() as http:
+            for path in ("/readyz", "/healthz"):
+                url = f"{self._base_url}{path}"
+                try:
+                    response = await http.get(url, timeout=PROBE_TIMEOUT)
+                except Exception as exc:  # noqa: BLE001
+                    detail = str(exc).strip() or type(exc).__name__
+                    return False, f"Failed to connect to VoxCPM service at {url}: {detail}"
+
+                if response.is_success:
+                    try:
+                        payload = response.json()
+                    except Exception:  # pragma: no cover - non-JSON probe responses are acceptable
+                        payload = None
+
+                    if isinstance(payload, dict):
+                        if payload.get("status") == "ready":
+                            return True, None
+                        if payload.get("model_loaded") is True and not payload.get("error"):
+                            return True, None
+                        if payload.get("error"):
+                            last_detail = str(payload["error"])
+                            continue
+                        if payload.get("model_loaded") is False:
+                            last_detail = "model not loaded"
+                            continue
+
+                    return True, None
+
+                detail = response.text[:200].strip() if response.text else f"HTTP {response.status_code}"
+                last_detail = f"VoxCPM probe failed at {url}: {detail}"
+
+        return False, last_detail or f"VoxCPM service at {self._base_url} is not ready"
+
+    async def ensure_ready(self) -> None:
+        """Raise when the local service is unavailable or still loading."""
+
+        ok, detail = await self.probe_ready()
+        if ok:
+            return
+        raise VoxCPMUnavailableError(detail or f"VoxCPM service at {self._base_url} is not ready")
 
     def _handle_response(self, response: httpx.Response) -> bytes:
         status = response.status_code
@@ -246,6 +293,16 @@ def build_params_from_env(
     return sanitize_params_for_mode(FishTTSParams(**base))
 
 
+async def ensure_voxcpm_service_ready(*, url: str = DEFAULT_VOXCPM_URL) -> None:
+    """Fail fast when the resident local VoxCPM service is not ready."""
+
+    client = VoxCPMClient(url=url)
+    try:
+        await client.ensure_ready()
+    finally:
+        await client.aclose()
+
+
 __all__ = [
     "DEFAULT_VOXCPM_URL",
     "VoxCPMClient",
@@ -254,6 +311,7 @@ __all__ = [
     "VoxCPMClientError",
     "VoxCPMServerError",
     "build_params_from_env",
+    "ensure_voxcpm_service_ready",
     "serialize_active_params",
     "sanitize_params_for_mode",
 ]

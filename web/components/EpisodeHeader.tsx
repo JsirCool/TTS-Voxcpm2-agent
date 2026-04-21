@@ -11,6 +11,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 
 interface Props {
   episode: Episode;
+  hasChunks: boolean;
+  chunkSyncPending?: boolean;
   running: boolean;
   runPending?: boolean;
   onRun: (mode: string) => void;
@@ -37,6 +39,8 @@ const STATUS_BADGE: Record<
 
 export function EpisodeHeader({
   episode,
+  hasChunks,
+  chunkSyncPending = false,
   running,
   runPending = false,
   onRun,
@@ -77,17 +81,29 @@ export function EpisodeHeader({
   // D-03: Button config per status
   const primaryButton = (() => {
     if (running) return { label: cancelPending ? "取消中…" : "取消", disabled: cancelPending, mode: "__cancel__" };
+    if (!hasChunks) {
+      if ((episode.status === "empty" || episode.status === "failed") && !chunkSyncPending) {
+        const label = episode.status === "failed"
+          ? (runPending ? "重试切稿中..." : "重新切稿")
+          : (runPending ? "切稿中..." : "切稿");
+        return { label, disabled: runPending, mode: "chunk_only" };
+      }
+      return {
+        label: chunkSyncPending ? "切稿中..." : "等待 chunk 同步",
+        disabled: true,
+        mode: "",
+      };
+    }
     switch (episode.status) {
-      case "empty":
-        return { label: runPending ? "切分中…" : "切分", disabled: runPending, mode: "chunk_only" };
       case "ready":
         return { label: runPending ? "启动中…" : "合成全部", disabled: runPending, mode: "synthesize" };
       case "failed":
         return { label: runPending ? "启动中…" : `重试失败 (${failedCount})`, disabled: failedCount === 0 || runPending, mode: "retry_failed" };
       case "done":
         return { label: "完成 ✓", disabled: true, mode: "" };
+      case "empty":
       default:
-        return { label: "不可执行", disabled: true, mode: "" };
+        return { label: "等待 chunk 同步", disabled: true, mode: "" };
     }
   })();
 

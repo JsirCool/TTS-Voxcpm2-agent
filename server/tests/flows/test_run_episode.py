@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -47,6 +48,7 @@ from server.core.domain import (
     P1Result,
 )
 from server.core.fish_client import FishAuthError, FishTTSClient
+from server.core.voxcpm_client import VoxCPMUnavailableError
 from server.core.models import Base, Chunk, Episode, Event
 from server.core.repositories import ChunkRepo, EpisodeRepo, EventRepo
 from server.core.storage import (
@@ -76,6 +78,7 @@ from server.flows.tasks.p5_subtitles import (
     run_p5_subtitles,
 )
 from server.flows.tasks.p6_concat import run_p6_concat
+from server.flows.run_episode import _run_synthesize
 
 EP_ID = "ep-flow-test"
 
@@ -420,3 +423,181 @@ async def test_p2v_timeout_aborts(seeded, storage, fake_fish):
     async with session_factory() as session:
         chunk = await ChunkRepo(session).get(chunk_ids[0])
         assert chunk.status == "synth_done"
+
+
+@pytest.mark.asyncio
+async def test_run_synthesize_auto_chunks_empty_episode(seeded, monkeypatch):
+    session_factory = seeded
+
+    from server.flows import run_episode as flow_module
+    from server.flows import worker_bootstrap
+    from server.core.domain import P6Result
+
+    worker_bootstrap._session_factory = session_factory
+    monkeypatch.setattr(worker_bootstrap, "bootstrap", lambda: None)
+
+    class _DoneFuture:
+        async def result(self):
+            return {"status": "ok"}
+
+    class _FakeMappedTask:
+        def map(self, ids, *args):
+            return [_DoneFuture() for _ in ids]
+
+    async def _fake_chunk_only(episode_id: str):
+        async with session_factory() as session:
+            await ChunkRepo(session).bulk_insert([
+                ChunkInput(
+                    id=f"{episode_id}:shot01:0",
+                    episode_id=episode_id,
+                    shot_id="shot01",
+                    idx=0,
+                    text="auto chunk",
+                    text_normalized="auto chunk",
+                    char_count=10,
+                ),
+            ])
+            await EpisodeRepo(session).set_status(episode_id, "ready")
+            await session.commit()
+        return {"mode": "chunk_only", "chunk_count": 1}
+
+    async def _fake_synth_one_chunk(*, chunk_id: str, **_: Any):
+        async with session_factory() as session:
+            await ChunkRepo(session).set_status(chunk_id, "verified")
+            await session.commit()
+        return {"chunk_id": chunk_id, "verdict": "pass"}
+
+    async def _fake_p6_concat(episode_id: str, padding_ms: int, shot_gap_ms: int):
+        return P6Result(
+            episode_id=episode_id,
+            wav_uri="s3://tts-harness/final.wav",
+            srt_uri="s3://tts-harness/final.srt",
+            total_duration_s=1.0,
+            chunk_count=1,
+        )
+
+    async def _fake_p6v_check(*args, **kwargs):
+        return {"status": "ok"}
+
+    monkeypatch.setattr(flow_module, "_run_chunk_only", _fake_chunk_only)
+    monkeypatch.setattr(flow_module, "_synth_one_chunk", _fake_synth_one_chunk)
+    monkeypatch.setattr(flow_module, "p1c_check", _FakeMappedTask())
+    monkeypatch.setattr(flow_module, "p5_subtitles", _FakeMappedTask())
+    monkeypatch.setattr(flow_module, "p6_concat", _fake_p6_concat)
+    monkeypatch.setattr(flow_module, "p6v_check", _fake_p6v_check)
+    monkeypatch.setattr(flow_module, "ensure_voxcpm_service_ready", AsyncMock(return_value=None))
+
+    result = await _run_synthesize(EP_ID, None, "zh", 0, 0)
+
+    assert result["total"] == 1
+    assert result["verified"] == 1
+
+    async with session_factory() as session:
+        chunks = await ChunkRepo(session).list_by_episode(EP_ID)
+        assert len(chunks) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_synthesize_blocks_when_voxcpm_unavailable_before_p2(seeded, monkeypatch):
+    session_factory = seeded
+
+    from server.flows import run_episode as flow_module
+    from server.flows import worker_bootstrap
+
+    worker_bootstrap._session_factory = session_factory
+    monkeypatch.setattr(worker_bootstrap, "bootstrap", lambda: None)
+
+    async with session_factory() as session:
+        await ChunkRepo(session).bulk_insert([
+            ChunkInput(
+                id=f"{EP_ID}:shot01:0",
+                episode_id=EP_ID,
+                shot_id="shot01",
+                idx=0,
+                text="blocked chunk",
+                text_normalized="blocked chunk",
+                char_count=13,
+            ),
+        ])
+        await EpisodeRepo(session).set_status(EP_ID, "ready")
+        await session.commit()
+
+    monkeypatch.setattr(
+        flow_module,
+        "ensure_voxcpm_service_ready",
+        AsyncMock(side_effect=VoxCPMUnavailableError("service unavailable")),
+    )
+
+    result = await flow_module._run_synthesize(EP_ID, None, "zh", 0, 0)
+
+    assert result["blocked"] == "voxcpm_unavailable"
+    assert result["verified"] == 0
+
+    async with session_factory() as session:
+        chunk = await ChunkRepo(session).get(f"{EP_ID}:shot01:0")
+        assert chunk is not None
+        assert chunk.status == "pending"
+
+        episode = await EpisodeRepo(session).get(EP_ID)
+        assert episode is not None
+        assert episode.status == "ready"
+
+        events = await EventRepo(session).list_recent(EP_ID, limit=10)
+        assert any(
+            event.kind == "episode_blocked" and event.payload.get("service") == "voxcpm"
+            for event in events
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_synthesize_blocks_when_voxcpm_drops_mid_run(seeded, monkeypatch):
+    session_factory = seeded
+
+    from server.flows import run_episode as flow_module
+    from server.flows import worker_bootstrap
+
+    worker_bootstrap._session_factory = session_factory
+    monkeypatch.setattr(worker_bootstrap, "bootstrap", lambda: None)
+
+    async with session_factory() as session:
+        await ChunkRepo(session).bulk_insert([
+            ChunkInput(
+                id=f"{EP_ID}:shot01:0",
+                episode_id=EP_ID,
+                shot_id="shot01",
+                idx=0,
+                text="midrun chunk",
+                text_normalized="midrun chunk",
+                char_count=11,
+            ),
+        ])
+        await EpisodeRepo(session).set_status(EP_ID, "ready")
+        await session.commit()
+
+    class _DoneFuture:
+        async def result(self):
+            return {"status": "ok"}
+
+    class _FakeMappedTask:
+        def map(self, ids, *args):
+            return [_DoneFuture() for _ in ids]
+
+    async def _boom_chunk(*, chunk_id: str, **_: Any):
+        raise VoxCPMUnavailableError(f"{chunk_id} lost service")
+
+    monkeypatch.setattr(flow_module, "ensure_voxcpm_service_ready", AsyncMock(return_value=None))
+    monkeypatch.setattr(flow_module, "_synth_one_chunk", _boom_chunk)
+    monkeypatch.setattr(flow_module, "p1c_check", _FakeMappedTask())
+
+    result = await flow_module._run_synthesize(EP_ID, None, "zh", 0, 0)
+
+    assert result["blocked"] == "voxcpm_unavailable"
+
+    async with session_factory() as session:
+        chunk = await ChunkRepo(session).get(f"{EP_ID}:shot01:0")
+        assert chunk is not None
+        assert chunk.status == "pending"
+
+        episode = await EpisodeRepo(session).get(EP_ID)
+        assert episode is not None
+        assert episode.status == "ready"
